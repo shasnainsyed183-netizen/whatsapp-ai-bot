@@ -2,10 +2,50 @@ const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = requi
 const { Boom } = require('@hapi/boom');
 const axios = require('axios');
 const express = require('express');
-const qrcode = require('qrcode-terminal');
+const QRCode = require('qrcode');
 
 const GEMINI_KEY = process.env.GEMINI_KEY;
+const PORT = process.env.PORT || 3000;
 let sock;
+let currentQR = null;
+
+const app = express();
+
+app.get('/', async (req, res) => {
+    if (currentQR) {
+        try {
+            const qrImage = await QRCode.toDataURL(currentQR, { width: 400, margin: 2 });
+            res.send(`
+                <html>
+                <head><title>WhatsApp Bot QR</title></head>
+                <body style="text-align:center; font-family:Arial; padding:20px; background:#f0f0f0;">
+                    <h2>Scan this QR with WhatsApp</h2>
+                    <p>WhatsApp - Settings - Linked Devices - Link a Device</p>
+                    <img src="${qrImage}" style="width:400px; height:400px; border:10px solid white; border-radius:10px;"/>
+                    <p style="color:green; font-size:16px;">Page auto-refresh ho raha hai har 20 second mein</p>
+                    <script>setTimeout(() => location.reload(), 20000);</script>
+                </body>
+                </html>
+            `);
+        } catch (err) {
+            res.send('QR generate error: ' + err.message);
+        }
+    } else {
+        res.send(`
+            <html>
+            <body style="text-align:center; font-family:Arial; padding:50px;">
+                <h2>WhatsApp Connected!</h2>
+                <p>Agar QR chahiye to page refresh karein.</p>
+                <script>setTimeout(() => location.reload(), 5000);</script>
+            </body>
+            </html>
+        `);
+    }
+});
+
+app.listen(PORT, () => {
+    console.log('Server is running on port ' + PORT);
+});
 
 async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info');
@@ -21,19 +61,19 @@ async function connectToWhatsApp() {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
-            console.log('\n========================================');
-            console.log('SCAN THIS QR CODE WITH YOUR WHATSAPP:');
-            console.log('========================================\n');
-            qrcode.generate(qr, { small: true });
+            currentQR = qr;
+            console.log('NEW QR GENERATED - Open your Railway URL in browser to scan');
         }
 
         if (connection === 'close') {
+            currentQR = null;
             const shouldReconnect = (lastDisconnect.error instanceof Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
             console.log('Connection closed. Reconnecting:', shouldReconnect);
             if (shouldReconnect) {
                 connectToWhatsApp();
             }
         } else if (connection === 'open') {
+            currentQR = null;
             console.log('WHATSAPP CONNECTED SUCCESSFULLY!');
         }
     });
@@ -48,33 +88,33 @@ async function connectToWhatsApp() {
             const text = msg.message.conversation || msg.message.extendedTextMessage?.text;
 
             if (!text) return;
-            console.log(`Message from ${from}: ${text}`);
+            console.log('Message from ' + from + ': ' + text);
 
             const models = ['gemini-2.0-flash', 'gemini-1.5-flash'];
             let aiReply = null;
 
             for (const model of models) {
                 try {
-                    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_KEY}`;
+                    const geminiUrl = 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + GEMINI_KEY;
                     const geminiResponse = await axios.post(geminiUrl, {
                         contents: [{
-                            parts: [{ text: `You are a helpful WhatsApp assistant. Answer in the same language as the user. Keep it short and friendly. User says: ${text}` }]
+                            parts: [{ text: 'You are a helpful WhatsApp assistant. Answer in the same language as the user. Keep it short and friendly. User says: ' + text }]
                         }]
                     });
                     aiReply = geminiResponse.data.candidates[0].content.parts[0].text;
-                    console.log(`AI replied using model: ${model}`);
+                    console.log('AI replied using model: ' + model);
                     break;
                 } catch (err) {
-                    console.log(`Model ${model} failed:`, err.response?.data?.error?.message || err.message);
+                    console.log('Model ' + model + ' failed: ' + (err.response?.data?.error?.message || err.message));
                 }
             }
 
             if (!aiReply) {
-                aiReply = "Sorry, main abhi jawab nahi de pa raha. Thodi der baad try karein.";
+                aiReply = 'Sorry, main abhi jawab nahi de pa raha. Thodi der baad try karein.';
             }
 
             await sock.sendMessage(from, { text: aiReply });
-            console.log(`Replied to ${from}: ${aiReply}`);
+            console.log('Replied to ' + from + ': ' + aiReply);
         } catch (error) {
             console.error('Error:', error.message);
         }
@@ -82,9 +122,3 @@ async function connectToWhatsApp() {
 }
 
 connectToWhatsApp();
-
-const app = express();
-app.get('/', (req, res) => res.send('WhatsApp Bot is running!'));
-app.listen(process.env.PORT || 3000, () => {
-    console.log(`Server is running on port ${process.env.PORT || 3000}`);
-});
