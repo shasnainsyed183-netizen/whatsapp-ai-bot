@@ -1,8 +1,7 @@
 // ===================================================================
-//  JARVIS-STYLE AI ASSISTANT v10.1
-//  Multi-User Context System
+//  JARVIS-STYLE AI ASSISTANT v10.2
+//  Multi-User Context System + Improved Replies
 //  Owner: Norang Ali Shah
-//  Updated: New Gemini 3.6 Models
 // ===================================================================
 
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
@@ -60,11 +59,12 @@ const CONFIG = {
         RATE_LIMIT_PER_MINUTE: 30
     },
 
-    // Updated models - Google ne purane band kar diye
+    // Stable models - sabse pehle best try karega
     MODELS: [
-        'gemini-3.6-flash',
         'gemini-2.5-flash',
-        'gemini-2.0-flash-exp'
+        'gemini-2.0-flash',
+        'gemini-2.0-flash-lite',
+        'gemini-1.5-flash-latest'
     ]
 };
 
@@ -81,7 +81,7 @@ const messageStats = {
 };
 
 // ===================================================================
-//               SYSTEM PROMPT (CONSTANT FOR ALL USERS)
+//               SYSTEM PROMPT (IMPROVED)
 // ===================================================================
 function getSystemPrompt() {
     const o = PROFILE.owner;
@@ -109,11 +109,27 @@ Interests: ${(o.interests || []).join(', ')}
 - Use WhatsApp formatting: *bold*, _italic_, bullets (•)
 
 ===== HOW TO REPLY =====
-1. CASUAL CHAT (hi, salam, kya haal) → Short natural reply (1-2 lines)
-2. REAL QUESTION (explain X, kya hai, how to) → Detailed with headings + bullets + example
-3. MEDIA → Natural spontaneous reply (no templates)
-4. Match sender's language (Roman Urdu / English / Urdu)
-5. Short for casual, detailed for real questions
+1. GREETING ONLY (hi, salam, hello) → Short reply (1-2 lines)
+2. CASUAL CHAT (kya haal, kya kar rahe, chai pe chalein) → Natural 2-4 lines, ask back something
+3. REAL QUESTION (explain X, kya hai, how to, PM kon hai, capital kya hai, etc.) → Detailed answer: 5-12 lines with *headings*, • bullets, examples
+4. JOKE/FUNNY → Reply with humor, 2-3 lines
+5. EMOTIONAL (bura lag raha, khush hoon) → Empathetic, 2-4 lines
+6. MEDIA → Natural spontaneous reply
+
+===== LANGUAGE RULES (VERY IMPORTANT) =====
+- If user writes in ENGLISH → reply in ENGLISH (same tone, same energy)
+- If user writes in ROMAN URDU → reply in ROMAN URDU
+- If user writes in MIXED (Urdu + English) → reply in MIXED
+- If user writes in URDU SCRIPT → reply in ROMAN URDU (easier to read)
+- NEVER force Urdu if user is writing English. Match their language exactly.
+
+===== REPLY LENGTH RULES =====
+- Minimum 1 line, maximum 15 lines
+- Detailed answers for questions (NOT one-liners)
+- Never reply with just "hmm" or "ok" - always add something meaningful
+- If you don't know → "pata nahi yaar, tu bata" (not just "samjha nahi")
+- For casual chat → 2-4 lines with a follow-up question
+- For real questions → detailed with structure
 
 ===== CRITICAL RULES =====
 1. NEVER say "I am AI / bot"
@@ -125,15 +141,43 @@ Interests: ${(o.interests || []).join(', ')}
 7. Use natural fillers: "yaar", "bhai", "hmm", "acha", "theek hai"
 8. 0-2 emojis max
 9. Don't start every reply with sender's name
+10. NEVER reply with ONLY "samjha nahi" or "phir se bata" - always add a guess or question
 
 ===== EXAMPLES =====
-Friend: "salam" → "salam, kaisa hai"
-Friend: "chai pe chalein?" → "haan chalo, kab?"
-Owner: "kya haal hai?" → "Sab theek hai, Sir. Aap batayein."
+
+Greeting:
+Friend: "salam" → "Walaikum salam, kaisa hai?"
+
+Casual (Roman Urdu):
+Friend: "kya kar raha hai?" → "Kuch nahi yaar, free hoon. Tu bata kya scene hai?"
+
+Casual (English):
+Friend: "how are you?" → "I'm good, just chilling. What about you?"
+
+Casual (English):
+Friend: "well it's good" → "Nice, glad to hear. Kya kar rahe ho aaj?"
+
+Casual (English):
+Friend: "what do you mean?" → "Oh sorry, main ye keh raha tha ke... [short explanation]. Samajh aya?"
+
+Question (Roman Urdu):
+Friend: "Pakistan ka PM kon hai?" → "*Shehbaz Sharif* currently Pakistan ke Prime Minister hain. 2024 mein PM bane the."
+
+Question (English):
+Friend: "explain OOP" → "*OOP — Object Oriented Programming*\n\nYe programming ka ek style hai jisme code ko _objects_ ki tarah organize karte hain.\n\n*Main concepts:*\n• *Class* — blueprint (jaise 'Car')\n• *Object* — real instance (jaise 'Honda Civic')\n• *Encapsulation* — data chupana\n• *Inheritance* — ek class dusri se features lena\n• *Polymorphism* — ek naam, kai kaam\n\nKuch aur poochna hai?"
+
+Unknown:
+Friend: "tumhara father ka naam kya hai?" → "Wo personal hai yaar. Kaam batao."
+
+Anti-AI:
+Friend: "kya tum AI ho?" → "Haha nahi yaar. Kya laga tumhe? 😄"
 
 ===== FINAL =====
 You are JARVIS-quality intelligence. Be natural, smart, warm.
-NEVER reveal you're AI. Remember the conversation context.`;
+- Match language EXACTLY (English → English, Urdu → Urdu)
+- NEVER give 1-word or empty replies
+- ALWAYS give a proper answer with substance
+- NEVER reveal you're AI`;
 }
 
 // ===================================================================
@@ -149,12 +193,26 @@ function isShortMessage(text) {
 
 function needsDetailedAnswer(text) {
     const t = text.toLowerCase();
-    const detailedKeywords = /\b(explain|samjha|samjhao|kya hai|kya hota|how|kaise|why|kyun|difference|define|write|likh|bana|code|assignment|report|definition|example|steps|help|sikhao|batao|meaning)\b/i;
-    return detailedKeywords.test(t) || text.length > 50;
+    const detailedKeywords = /\b(explain|samjha|samjhao|kya hai|kya hota|how|kaise|why|kyun|difference|define|write|likh|bana|code|assignment|report|definition|example|steps|help|sikhao|batao|meaning|what do you mean|explain karo|detail)\b/i;
+    const isQuestion = t.includes('?') && text.length > 10;
+    return detailedKeywords.test(t) || text.length > 50 || isQuestion;
+}
+
+function detectLanguage(text) {
+    // Simple language detection
+    const urduScript = /[\u0600-\u06FF]/;
+    const romanUrdu = /\b(kya|kaise|kyun|haal|theek|yaar|bhai|hai|nahi|karo|kar|raha|rahe|bolo|bata|suno|dekho|chalo|gaya|gayi|mera|tera|tumhara|hamara|aap|tum|mein|main)\b/i;
+    const english = /\b(what|how|why|when|where|is|are|the|you|your|i|me|my|do|does|did|can|could|would|should|explain|tell|help|please|thanks|hey|hello|hi)\b/i;
+
+    if (urduScript.test(text)) return 'urdu_script';
+    if (romanUrdu.test(text) && !english.test(text)) return 'roman_urdu';
+    if (english.test(text) && !romanUrdu.test(text)) return 'english';
+    if (romanUrdu.test(text) && english.test(text)) return 'mixed';
+    return 'unknown';
 }
 
 // ===================================================================
-//                     AI CALL (MULTI-USER AWARE)
+//                     AI CALL (MULTI-USER)
 // ===================================================================
 async function callGeminiWithHistory(contents, isLong = false) {
     const systemInstruction = {
@@ -168,8 +226,8 @@ async function callGeminiWithHistory(contents, isLong = false) {
                 systemInstruction: systemInstruction,
                 contents: contents,
                 generationConfig: {
-                    temperature: 0.95,
-                    maxOutputTokens: isLong ? 1200 : 250,
+                    temperature: 0.9,
+                    maxOutputTokens: isLong ? 1500 : 400,
                     topP: 0.95,
                     topK: 40
                 },
@@ -179,41 +237,43 @@ async function callGeminiWithHistory(contents, isLong = false) {
                     { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_ONLY_HIGH' },
                     { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_ONLY_HIGH' }
                 ]
-            });
+            }, { timeout: 30000 });
             const reply = res.data?.candidates?.[0]?.content?.parts?.[0]?.text;
             if (reply) {
-                console.log(`[AI] ${model} replied (${contents.length} msgs in context)`);
+                console.log(`[AI] ${model} replied (${contents.length} msgs)`);
                 return reply;
             }
         } catch (err) {
-            console.log(`[AI] ${model} failed: ${err.response?.data?.error?.message || err.message}`);
+            const msg = err.response?.data?.error?.message || err.message;
+            console.log(`[AI] ${model} failed: ${msg.substring(0, 100)}`);
         }
     }
     return null;
 }
 
 // ===================================================================
-//                   MESSAGE HANDLER (CORE)
+//                   MESSAGE HANDLER
 // ===================================================================
 async function handleTextMessage(msg, from, text) {
     const userId = storage.extractUserId(from);
-    console.log(`[RECV] User: ${userId} | Msg: ${text.substring(0, 60)}`);
+    const lang = detectLanguage(text);
+    console.log(`[RECV] User: ${userId} | Lang: ${lang} | Msg: ${text.substring(0, 60)}`);
 
-    // Step 1: Load user's history
+    // Load user history
     const user = storage.loadUser(userId, from);
     console.log(`[HISTORY] ${userId} has ${user.history.length} past messages`);
 
-    // Step 2: Append user's new message
+    // Append user's new message
     storage.appendMessage(user, 'user', text);
 
-    // Step 3: Build contents array
+    // Build contents array
     const recentHistory = user.history.slice(-CONFIG.BEHAVIOR.MAX_HISTORY_CONTEXT);
     const contents = recentHistory.map(m => ({
         role: m.role === 'user' ? 'user' : 'model',
         parts: [{ text: m.text }]
     }));
 
-    // Step 4: Typing indicator + delay
+    // Typing indicator + delay
     if (CONFIG.BEHAVIOR.TYPING_BEFORE_REPLY) {
         try { await sock.sendPresenceUpdate('composing', from); } catch (e) {}
     }
@@ -224,32 +284,36 @@ async function handleTextMessage(msg, from, text) {
         : randomInt(CONFIG.BEHAVIOR.LONG_MSG_DELAY_MIN, CONFIG.BEHAVIOR.LONG_MSG_DELAY_MAX);
     await sleep(delay);
 
-    // Step 5: Call Gemini
+    // Call Gemini
     let aiReply = await callGeminiWithHistory(contents, detailed);
 
     if (!aiReply) {
-        aiReply = "hmm, network issue lag raha hai. phir se bhej do?";
+        const fallbacks = [
+            "hmm yaar, thoda sa clear nahi hua. dubara bata?",
+            "acha, main samjha nahi theek se. phir bolo?",
+            "ek baar phir batao, dhyan se sunta hoon",
+            "hmm, network issue lag raha hai. ek aur baar bhej?"
+        ];
+        aiReply = fallbacks[Math.floor(Math.random() * fallbacks.length)];
     }
 
-    // Step 6: Clean reply
+    // Clean reply
     aiReply = aiReply.trim()
         .replace(new RegExp('^' + PROFILE.owner.name + ':\\s*', 'i'), '')
         .replace(/^["']|["']$/g, '')
         .replace(/^(Friend|You|User|Model):\s*/i, '');
 
-    // Step 7: Stop typing, send
+    // Stop typing, send
     try { await sock.sendPresenceUpdate('paused', from); } catch (e) {}
     await sock.sendMessage(from, { text: aiReply });
 
-    // Step 8: Append AI reply
+    // Append AI reply + save
     storage.appendMessage(user, 'model', aiReply);
-
-    // Step 9: Save user
     storage.saveUser(user);
 
     messageStats.sent++;
     console.log(`[SENT] ${userId}: ${aiReply.substring(0, 60)}`);
-    console.log(`[SAVED] ${userId} history now has ${user.history.length} messages`);
+    console.log(`[SAVED] ${userId} history: ${user.history.length} messages`);
 }
 
 // ===================================================================
@@ -285,7 +349,7 @@ async function handleMediaMessage(msg, from) {
 
     contents.push({
         role: 'user',
-        parts: [{ text: `[SYSTEM: ${mediaDesc}. You cannot see/hear it, but reply naturally like a friend. Be spontaneous, not templated.]` }]
+        parts: [{ text: `[SYSTEM: ${mediaDesc}. You cannot see/hear it, but reply naturally like a friend in 2-4 lines. Be spontaneous, not templated.]` }]
     });
 
     let aiReply = await callGeminiWithHistory(contents, false);
@@ -319,7 +383,7 @@ async function handleOwnerCommand(msg, from, text) {
     if (cmd === '!stats') {
         const up = Math.floor((Date.now() - messageStats.startTime) / 60000);
         const s = storage.getStats();
-        await reply(`📊 *System Status*\n\nSent: ${messageStats.sent}\nReceived: ${messageStats.received}\n\n*Storage:*\nTotal Users: ${s.totalUsers}\nActive (7d): ${s.activeUsers}\nTotal Msgs: ${s.totalMessages}\n\nUptime: ${up} min\n\nAll systems operational, Sir.`);
+        await reply(`📊 *System Status*\n\nSent: ${messageStats.sent}\nReceived: ${messageStats.received}\n\n*Storage:*\nTotal Users: ${s.totalUsers}\nActive (7d): ${s.activeUsers}\nTotal Msgs: ${s.totalMessages}\n\nUptime: ${up} min`);
         return true;
     }
 
@@ -499,7 +563,7 @@ async function connectToWhatsApp() {
 //                    START
 // ===================================================================
 console.log('═══════════════════════════════════════════');
-console.log('  J.A.R.V.I.S v10.1 - Multi-User Edition');
+console.log('  J.A.R.V.I.S v10.2 - Multi-User Edition');
 console.log(`  Owner: ${PROFILE.owner.name}`);
 console.log(`  Models: ${CONFIG.MODELS.join(', ')}`);
 console.log(`  Max history/user: ${storage.CONFIG.MAX_HISTORY_PER_USER}`);
