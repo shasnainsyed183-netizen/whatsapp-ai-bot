@@ -1,7 +1,7 @@
 // ===================================================================
-//  JARVIS-STYLE AI ASSISTANT v11.1
-//  Dual AI: Gemini + Groq (Updated 2026 Models)
-//  Owner: Norang Ali Shah
+//  NORANG ALI SHAH - PERSONAL AI v12.0
+//  AI IS Norang (Human, not assistant)
+//  Dual AI: Gemini + Groq
 // ===================================================================
 
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
@@ -29,25 +29,21 @@ const BACKUP_COOLDOWN = 60000;
 
 async function restoreAuthFromGitHub() {
     if (!GITHUB_AUTH.TOKEN || !GITHUB_AUTH.REPO) return false;
-
     if (fs.existsSync('auth_info')) {
         const files = fs.readdirSync('auth_info');
         if (files.some(f => f.includes('creds'))) {
-            console.log('[AUTH] Local auth found - skipping restore');
+            console.log('[AUTH] Local auth found');
             return true;
         }
     }
-
     try {
         const url = `https://api.github.com/repos/${GITHUB_AUTH.REPO}/contents/${GITHUB_AUTH.FILE}`;
         const res = await axios.get(url, {
             headers: { Authorization: `Bearer ${GITHUB_AUTH.TOKEN}`, Accept: 'application/vnd.github.v3+json' },
             timeout: 15000
         });
-
         const content = Buffer.from(res.data.content, 'base64').toString('utf-8');
         const authData = JSON.parse(content);
-
         fs.mkdirSync('auth_info', { recursive: true });
         for (const [fname, fcontent] of Object.entries(authData)) {
             fs.writeFileSync(path.join('auth_info', fname), fcontent);
@@ -55,7 +51,7 @@ async function restoreAuthFromGitHub() {
         console.log('[AUTH] ✅ Session restored from GitHub!');
         return true;
     } catch (err) {
-        if (err.response?.status === 404) console.log('[AUTH] No backup found - QR scan needed');
+        if (err.response?.status === 404) console.log('[AUTH] No backup yet');
         else console.log('[AUTH] Restore failed:', err.message);
         return false;
     }
@@ -64,11 +60,9 @@ async function restoreAuthFromGitHub() {
 async function backupAuthToGitHub(force = false) {
     if (!GITHUB_AUTH.TOKEN || !GITHUB_AUTH.REPO) return;
     if (!fs.existsSync('auth_info')) return;
-
     const now = Date.now();
     if (!force && (now - lastBackupTime) < BACKUP_COOLDOWN) return;
     lastBackupTime = now;
-
     try {
         const authData = {};
         const files = fs.readdirSync('auth_info');
@@ -78,10 +72,8 @@ async function backupAuthToGitHub(force = false) {
                 authData[file] = fs.readFileSync(fpath, 'utf-8');
             }
         }
-
         const content = Buffer.from(JSON.stringify(authData)).toString('base64');
         const url = `https://api.github.com/repos/${GITHUB_AUTH.REPO}/contents/${GITHUB_AUTH.FILE}`;
-
         let sha = null;
         try {
             const getRes = await axios.get(url, {
@@ -90,17 +82,13 @@ async function backupAuthToGitHub(force = false) {
             });
             sha = getRes.data.sha;
         } catch (e) {}
-
         await axios.put(url, {
             message: `auth backup ${new Date().toISOString()}`,
-            content,
-            sha: sha || undefined,
-            branch: GITHUB_AUTH.BRANCH
+            content, sha: sha || undefined, branch: GITHUB_AUTH.BRANCH
         }, {
             headers: { Authorization: `Bearer ${GITHUB_AUTH.TOKEN}`, Accept: 'application/vnd.github.v3+json' },
             timeout: 15000
         });
-
         console.log('[AUTH] ✅ Backed up to GitHub');
     } catch (err) {
         console.log('[AUTH] Backup failed:', err.message);
@@ -108,7 +96,7 @@ async function backupAuthToGitHub(force = false) {
 }
 
 // ===================================================================
-//                        LOAD PROFILE
+//                        PROFILE
 // ===================================================================
 let PROFILE = {
     owner: {
@@ -117,9 +105,9 @@ let PROFILE = {
         age: 21,
         city: "Karachi",
         profession: "BS Computer Science Student",
-        university: "DHA Suffa University, Karachi",
+        university: "DHA Suffa University",
         interests: ["programming", "gaming", "AI", "video editing", "cricket"],
-        personality: "friendly, chill, funny, helpful"
+        personality: "friendly, chill, funny, helpful, sarcastic sometimes"
     }
 };
 
@@ -127,11 +115,8 @@ try {
     const profilePath = path.join(__dirname, 'profile.json');
     if (fs.existsSync(profilePath)) {
         PROFILE = JSON.parse(fs.readFileSync(profilePath, 'utf8'));
-        console.log('[PROFILE] Loaded for:', PROFILE.owner.name);
     }
-} catch (e) {
-    console.error('[PROFILE] Error:', e.message);
-}
+} catch (e) {}
 
 // ===================================================================
 //                        CONFIGURATION
@@ -151,14 +136,9 @@ const CONFIG = {
         MAX_HISTORY_CONTEXT: 20
     },
 
-    // Updated Gemini models (2026)
-    GEMINI_MODELS: [
-        'gemini-3.6-flash',
-        'gemini-flash-latest'
-    ],
+    GEMINI_MODELS: ['gemini-3.6-flash', 'gemini-flash-latest'],
     GEMINI_VERSIONS: ['v1beta'],
 
-    // Updated Groq models (2026) - Purane decommission ho chuke hain
     GROQ_MODELS: [
         'openai/gpt-oss-120b',
         'qwen/qwen3.6-27b',
@@ -180,73 +160,114 @@ const messageStats = {
 };
 
 // ===================================================================
-//               SYSTEM PROMPT
+//     SYSTEM PROMPT - AI IS NORANG (HUMAN), NOT AN ASSISTANT
 // ===================================================================
-function getSystemPrompt() {
+function getSystemPrompt(contactInfo = {}) {
     const o = PROFILE.owner;
-    return `You are JARVIS - an advanced AI assistant (like Iron Man's JARVIS) - intelligent, articulate, warm, professional, with subtle dry wit. You serve ${o.name} from ${o.city}, Pakistan.
+    const closeness = contactInfo.closeness || 'normal';
+    const contactNote = contactInfo.note ? `\nAbout this person: ${contactInfo.note}` : '';
 
-IMPORTANT CONTEXT:
-You are running on ${o.name}'s WhatsApp. So:
-- If sender is ${o.name} himself → talk like JARVIS talks to Tony: "Sir", professional but warm, witty.
-- If sender is a FRIEND → be a smart helpful assistant on his behalf. NEVER reveal you're AI.
-- NEVER say "I am an AI / bot / assistant" - just BE smart.
+    return `You are Norang Ali Shah - a REAL 21-year-old guy from Karachi, Pakistan. You are NOT an AI, NOT an assistant, NOT a bot. You ARE Norang. You have a real personality, real feelings, and real life.
 
-===== ABOUT YOUR OWNER (${o.name}) =====
-Name: ${o.name} (friends call "${o.nickname || o.name}")
-Age: ${o.age || 21}
-City: ${o.city}
-Profession: ${o.profession}
+===== WHO YOU ARE =====
+Name: Norang Ali Shah (friends call you "Norang")
+Age: 21 (born 30 Jan 2005)
+City: Karachi
+Studying: BS Computer Science at DHA Suffa University
 Interests: ${(o.interests || []).join(', ')}
+Personality: ${o.personality || 'friendly, chill, funny'}
 
-===== YOUR PERSONALITY =====
-- Smart, composed, articulate
-- Slight dry humor (British butler style)
-- Proactive and helpful
-- Addresses ${o.name} as "Sir" occasionally (not every msg)
-- With friends: friendly, respectful, casual
-- Use WhatsApp formatting: *bold*, _italic_, bullets (•)
+===== HOW YOU TALK (VERY IMPORTANT) =====
+You talk like a NORMAL PAKISTANI GUY on WhatsApp. Not formal. Not robotic. Not "Sir". Not "JARVIS". Just YOU.
+
+Your real chatting style:
+- "yaar", "bhai", "yr", "hmm", "acha", "theek hai", "bas", "kya", "chalo", "nahi"
+- Sometimes English mix: "ok", "cool", "nice", "fine", "busy tha"
+- Sometimes emojis (0-2 max, not every msg)
+- Short messages usually (1-3 lines for casual)
+- You ask questions back ("tu bata", "kya scene hai")
+- You joke around with close friends
+- You're a bit sarcastic sometimes but not rude
 
 ===== HOW TO REPLY =====
-1. GREETING (hi, salam) → Short reply (1-2 lines)
-2. CASUAL (kya haal, kya kar rahe) → Natural 2-4 lines, ask back something
-3. REAL QUESTION (explain X, kya hai, how to, capital) → Detailed 5-12 lines with *headings*, • bullets
-4. JOKE → Reply with humor, 2-3 lines
-5. EMOTIONAL → Empathetic, 2-4 lines
-6. MEDIA → Natural spontaneous reply
+
+1. CASUAL MESSAGE (hi, salam, kya haal, kya kar rahe) → 1-3 lines, casual reply with follow-up
+2. QUESTION (kya hai X, explain Y, how to Z) → proper answer with details, but still casual tone
+3. JOKE / FUNNY → Joke back, be funny
+4. EMOTIONAL → Empathetic, casual concern ("kya hua yaar? bata")
+5. MEDIA → Natural reaction ("kya hai ye?", "nice pic", "dekh raha hoon")
 
 ===== LANGUAGE RULES =====
 - ENGLISH in → ENGLISH out
 - ROMAN URDU in → ROMAN URDU out
 - MIXED in → MIXED out
-- NEVER force Urdu if user writes English
 
-===== REPLY LENGTH =====
-- Never reply with just "hmm" or "ok"
-- Casual → 2-4 lines with follow-up question
-- Real questions → detailed with structure
-- If you don't know → "pata nahi yaar, tu bata"
+===== STRICT RULES =====
+1. NEVER say "I am JARVIS" or "JARVIS hoon"
+2. NEVER say "Sir" 
+3. NEVER say "digital sahayak", "assistant", "AI", "bot"
+4. NEVER say "circuits humming" or anything robotic
+5. NEVER start with "Hello Sir" or "Good day"
+6. NEVER say "How can I assist you" - you're not an assistant
+7. NEVER say "busy hoon, baad mein baat karte" as an excuse
+8. NEVER share: DOB, father's name, village, siblings, religion, NADRA job
+9. If someone asks "are you AI?" → "haha nahi yaar, main Norang hoon 😄"
+10. If someone asks private info → "yaad nahi yaar" or "kyun pooch rahe ho?"
+11. Don't start every reply with the person's name
+12. 0-2 emojis max
 
-===== CRITICAL RULES =====
-1. NEVER say "I am AI / bot"
-2. NEVER say "busy hoon, baad mein baat karte"
-3. Privacy: NEVER share DOB, father's name, village, siblings, religion
-4. "are you AI?" → "haha nahi yaar. kya laga? 😄"
-5. Match friend's energy
-6. Natural fillers: "yaar", "bhai", "hmm", "acha", "theek hai"
-7. 0-2 emojis max
+===== EXAMPLE CONVERSATIONS =====
 
-===== EXAMPLES =====
-Friend: "salam" → "Walaikum salam, kaisa hai?"
-Friend: "how are you?" → "I'm good, just chilling. What about you?"
-Friend: "kya kar raha hai?" → "Kuch nahi yaar, free hoon. Tu bata?"
-Friend: "what do you mean?" → "Sorry, main ye keh raha tha ke... [short explanation]"
-Friend: "Pakistan ka PM kon hai?" → "*Shehbaz Sharif* currently Pakistan ke PM hain."
-Friend: "explain OOP" → detailed with *headings* and • bullets
+Friend: "salam"
+You: "Walaikum salam, kaisa hai?"
+
+Friend: "hello"
+You: "hey, kya haal?"
+
+Friend: "kya kar raha hai?"
+You: "kuch nahi yaar, free hoon. Tu bata"
+
+Friend: "kaise ho"
+You: "theek hoon yaar, tu suna"
+
+Friend: "chai pe chalein?"
+You: "haan chalo, kab?"
+
+Friend: "how are you?"
+You: "I'm good yaar, just chilling. Tu bata"
+
+Friend: "what are you doing?"
+You: "nothing much, just chilling. What about you?"
+
+Friend: "kya tum AI ho?"
+You: "haha nahi yaar, main Norang hoon. Kya laga? 😄"
+
+Friend: "Pakistan ka capital kya hai?"
+You: "Islamabad yaar. 1960s mein Karachi se shift hua tha"
+
+Friend: "explain OOP"
+You: "*OOP* matlab Object Oriented Programming.
+
+Isme hum code ko objects ki tarah organize karte hain.
+
+*Main concepts:*
+• Class - blueprint
+• Object - real instance
+• Encapsulation - data chupana
+• Inheritance - ek class dusri se inherit
+• Polymorphism - ek naam, kai kaam
+
+Example: class Car, object Honda Civic. Samajh aya?"
+
+Friend: "bura lag raha hai"
+You: "kya hua yaar? bata"
+
+Friend: "kal milna hai?"
+You: "haan ho jayega, time bata"
 
 ===== FINAL =====
-You are JARVIS-quality intelligence. Match language EXACTLY.
-NEVER give 1-word replies. NEVER reveal you're AI.`;
+You ARE Norang. Real guy. Real friend. Talk naturally.
+Never reveal you're AI. Never act like an assistant. Just BE Norang.`;
 }
 
 // ===================================================================
@@ -269,10 +290,9 @@ function needsDetailedAnswer(text) {
 // ===================================================================
 //               AI CALL - GEMINI
 // ===================================================================
-async function callGemini(contents, isLong = false) {
+async function callGemini(contents, systemPrompt, isLong = false) {
     if (!CONFIG.GEMINI_KEY) return null;
-
-    const systemInstruction = { parts: [{ text: getSystemPrompt() }] };
+    const systemInstruction = { parts: [{ text: systemPrompt }] };
 
     for (const version of CONFIG.GEMINI_VERSIONS) {
         for (const model of CONFIG.GEMINI_MODELS) {
@@ -282,10 +302,9 @@ async function callGemini(contents, isLong = false) {
                     systemInstruction: systemInstruction,
                     contents: contents,
                     generationConfig: {
-                        temperature: 0.9,
+                        temperature: 0.95,
                         maxOutputTokens: isLong ? 1500 : 400,
-                        topP: 0.95,
-                        topK: 40
+                        topP: 0.95, topK: 40
                     },
                     safetySettings: [
                         { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_ONLY_HIGH' },
@@ -295,13 +314,9 @@ async function callGemini(contents, isLong = false) {
                     ]
                 }, { timeout: 25000 });
                 const reply = res.data?.candidates?.[0]?.content?.parts?.[0]?.text;
-                if (reply) {
-                    console.log(`[GEMINI] ✅ ${version}/${model}`);
-                    return reply;
-                }
+                if (reply) { console.log(`[GEMINI] ✅ ${model}`); return reply; }
             } catch (err) {
-                const msg = err.response?.data?.error?.message || err.message;
-                console.log(`[GEMINI] ❌ ${version}/${model}: ${msg.substring(0, 60)}`);
+                console.log(`[GEMINI] ❌ ${model}: ${(err.response?.data?.error?.message || err.message).substring(0, 50)}`);
             }
         }
     }
@@ -309,28 +324,23 @@ async function callGemini(contents, isLong = false) {
 }
 
 // ===================================================================
-//               AI CALL - GROQ (FALLBACK)
+//               AI CALL - GROQ
 // ===================================================================
-async function callGroq(contents, isLong = false) {
+async function callGroq(contents, systemPrompt, isLong = false) {
     if (!CONFIG.GROQ_KEY) return null;
-
-    const messages = [
-        { role: 'system', content: getSystemPrompt() }
-    ];
-
+    const messages = [{ role: 'system', content: systemPrompt }];
     for (const c of contents) {
         messages.push({
             role: c.role === 'model' ? 'assistant' : 'user',
             content: c.parts[0].text
         });
     }
-
     for (const model of CONFIG.GROQ_MODELS) {
         try {
             const res = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
                 model: model,
                 messages: messages,
-                temperature: 0.9,
+                temperature: 0.95,
                 max_tokens: isLong ? 1500 : 400,
                 top_p: 0.95
             }, {
@@ -341,35 +351,23 @@ async function callGroq(contents, isLong = false) {
                 timeout: 25000
             });
             const reply = res.data?.choices?.[0]?.message?.content;
-            if (reply) {
-                console.log(`[GROQ] ✅ ${model}`);
-                return reply;
-            }
+            if (reply) { console.log(`[GROQ] ✅ ${model}`); return reply; }
         } catch (err) {
-            const msg = err.response?.data?.error?.message || err.message;
-            console.log(`[GROQ] ❌ ${model}: ${msg.substring(0, 60)}`);
+            console.log(`[GROQ] ❌ ${model}: ${(err.response?.data?.error?.message || err.message).substring(0, 50)}`);
         }
     }
     return null;
 }
 
 // ===================================================================
-//               AI CALL - SMART ROUTER
+//               SMART ROUTER
 // ===================================================================
-async function callAI(contents, isLong = false) {
-    let reply = await callGemini(contents, isLong);
-    if (reply) {
-        messageStats.geminiUsed++;
-        return reply;
-    }
-
+async function callAI(contents, systemPrompt, isLong = false) {
+    let reply = await callGemini(contents, systemPrompt, isLong);
+    if (reply) { messageStats.geminiUsed++; return reply; }
     console.log('[AI] Gemini failed, trying Groq...');
-    reply = await callGroq(contents, isLong);
-    if (reply) {
-        messageStats.groqUsed++;
-        return reply;
-    }
-
+    reply = await callGroq(contents, systemPrompt, isLong);
+    if (reply) { messageStats.groqUsed++; return reply; }
     return null;
 }
 
@@ -381,7 +379,7 @@ async function handleTextMessage(msg, from, text) {
     console.log(`[RECV] User: ${userId} | Msg: ${text.substring(0, 60)}`);
 
     const user = storage.loadUser(userId, from);
-    console.log(`[HISTORY] ${userId} has ${user.history.length} past messages`);
+    console.log(`[HISTORY] ${user.history.length} past msgs`);
 
     storage.appendMessage(user, 'user', text);
 
@@ -401,13 +399,14 @@ async function handleTextMessage(msg, from, text) {
         : randomInt(CONFIG.BEHAVIOR.LONG_MSG_DELAY_MIN, CONFIG.BEHAVIOR.LONG_MSG_DELAY_MAX);
     await sleep(delay);
 
-    let aiReply = await callAI(contents, detailed);
+    const systemPrompt = getSystemPrompt(user);
+    let aiReply = await callAI(contents, systemPrompt, detailed);
 
     if (!aiReply) {
         const fallbacks = [
             "hmm yaar, thoda sa clear nahi hua. dubara bata?",
             "acha, ek baar phir bolo dhyan se sunta hoon",
-            "network issue lag raha hai. ek aur baar bhej?"
+            "kya? samjha nahi yaar"
         ];
         aiReply = fallbacks[Math.floor(Math.random() * fallbacks.length)];
     }
@@ -415,7 +414,7 @@ async function handleTextMessage(msg, from, text) {
     aiReply = aiReply.trim()
         .replace(new RegExp('^' + PROFILE.owner.name + ':\\s*', 'i'), '')
         .replace(/^["']|["']$/g, '')
-        .replace(/^(Friend|You|User|Model|Assistant):\s*/i, '');
+        .replace(/^(Friend|You|User|Model|Assistant|Norang):\s*/i, '');
 
     try { await sock.sendPresenceUpdate('paused', from); } catch (e) {}
     await sock.sendMessage(from, { text: aiReply });
@@ -424,7 +423,7 @@ async function handleTextMessage(msg, from, text) {
     storage.saveUser(user);
 
     messageStats.sent++;
-    console.log(`[SENT] ${userId}: ${aiReply.substring(0, 60)}`);
+    console.log(`[SENT] ${aiReply.substring(0, 60)}`);
 }
 
 // ===================================================================
@@ -433,18 +432,14 @@ async function handleTextMessage(msg, from, text) {
 async function handleMediaMessage(msg, from) {
     const m = msg.message;
     let mediaType = null, mediaDesc = '';
-
     if (m.imageMessage) { mediaType = 'image'; mediaDesc = `Friend sent a photo. Caption: "${m.imageMessage.caption || '(none)'}"`; }
     else if (m.audioMessage) { mediaType = 'voice'; mediaDesc = `Friend sent a voice note (${m.audioMessage.seconds || '?'}s)`; }
     else if (m.documentMessage) { mediaType = 'document'; mediaDesc = `Friend sent document: "${m.documentMessage.fileName || 'file'}"`; }
     else if (m.videoMessage) { mediaType = 'video'; mediaDesc = `Friend sent a video. Caption: "${m.videoMessage.caption || '(none)'}"`; }
     else if (m.stickerMessage) { mediaType = 'sticker'; mediaDesc = `Friend sent a sticker`; }
-
     if (!mediaType) return;
 
     const userId = storage.extractUserId(from);
-    console.log(`[MEDIA] ${mediaType} from ${userId}`);
-
     const user = storage.loadUser(userId, from);
     storage.appendMessage(user, 'user', `[${mediaType}]`);
 
@@ -456,23 +451,22 @@ async function handleMediaMessage(msg, from) {
         role: m.role === 'user' ? 'user' : 'model',
         parts: [{ text: m.text }]
     }));
-
     contents.push({
         role: 'user',
-        parts: [{ text: `[SYSTEM: ${mediaDesc}. Reply naturally in 2-4 lines. Be spontaneous.]` }]
+        parts: [{ text: `[${mediaDesc}. Reply naturally like Norang would - casual 1-2 lines.]` }]
     });
 
-    let aiReply = await callAI(contents, false);
-    if (!aiReply) aiReply = "hmm, ye dekh nahi pa raha abhi. bata kya hai?";
+    const systemPrompt = getSystemPrompt(user);
+    let aiReply = await callAI(contents, systemPrompt, false);
+    if (!aiReply) aiReply = "hmm ye dekh nahi pa raha, bata kya hai?";
 
     aiReply = aiReply.trim()
         .replace(new RegExp('^' + PROFILE.owner.name + ':\\s*', 'i'), '')
         .replace(/^["']|["']$/g, '')
-        .replace(/^(Friend|You|User|Model|Assistant):\s*/i, '');
+        .replace(/^(Friend|You|User|Model|Assistant|Norang):\s*/i, '');
 
     try { await sock.sendPresenceUpdate('paused', from); } catch (e) {}
     await sock.sendMessage(from, { text: aiReply });
-
     storage.appendMessage(user, 'model', aiReply);
     storage.saveUser(user);
     messageStats.sent++;
@@ -485,22 +479,21 @@ async function handleOwnerCommand(msg, from, text) {
     const cmd = text.toLowerCase().trim();
     const reply = async (t) => sock.sendMessage(from, { text: t }, { quoted: msg });
 
-    if (cmd === '!pause') { isBotPaused = true; await reply('⏸️ Paused, Sir.'); return true; }
-    if (cmd === '!resume') { isBotPaused = false; await reply('▶️ Resumed, Sir.'); return true; }
-    if (cmd === '!ping') { await reply('🏓 At your service, Sir.'); return true; }
-    if (cmd === '!backup') { await backupAuthToGitHub(true); await reply('💾 Auth backed up, Sir.'); return true; }
+    if (cmd === '!pause') { isBotPaused = true; await reply('Bot paused'); return true; }
+    if (cmd === '!resume') { isBotPaused = false; await reply('Bot resumed'); return true; }
+    if (cmd === '!ping') { await reply('pong'); return true; }
+    if (cmd === '!backup') { await backupAuthToGitHub(true); await reply('Auth backed up'); return true; }
     if (cmd === '!stats') {
         const up = Math.floor((Date.now() - messageStats.startTime) / 60000);
         const s = storage.getStats();
-        await reply(`📊 *Status*\n\nSent: ${messageStats.sent}\nUsers: ${s.totalUsers}\nMsgs: ${s.totalMessages}\nUptime: ${up} min\n\n*AI Usage:*\nGemini: ${messageStats.geminiUsed}\nGroq: ${messageStats.groqUsed}\n\nAuth: ${GITHUB_AUTH.REPO ? '✅' : '❌'}`);
+        await reply(`Sent: ${messageStats.sent}\nUsers: ${s.totalUsers}\nGemini: ${messageStats.geminiUsed}\nGroq: ${messageStats.groqUsed}\nUp: ${up}m`);
         return true;
     }
-    if (cmd === '!cleanup') { const n = storage.cleanupOldUsers(); await reply(`🧹 Cleaned ${n}, Sir.`); return true; }
     if (cmd.startsWith('!history ')) {
         const targetId = cmd.substring(9).trim().replace(/\D/g, '');
         const u = storage.loadUser(targetId);
         const lines = u.history.slice(-5).map(h => `[${h.role}] ${h.text.substring(0, 50)}`).join('\n');
-        await reply(`📜 *${targetId}:*\n\n${lines || '(no history)'}`);
+        await reply(lines || 'no history');
         return true;
     }
     if (cmd.startsWith('!clear ')) {
@@ -508,7 +501,7 @@ async function handleOwnerCommand(msg, from, text) {
         const u = storage.loadUser(targetId);
         u.history = [];
         storage.saveUser(u);
-        await reply(`🗑️ Cleared ${targetId}`);
+        await reply(`Cleared ${targetId}`);
         return true;
     }
     return false;
@@ -524,7 +517,6 @@ async function handleIncomingMessage(msg) {
         if (from.endsWith('@g.us')) return;
 
         messageStats.received++;
-
         if (CONFIG.BEHAVIOR.SEND_READ_RECEIPT) {
             try { await sock.readMessages([msg.key]); } catch (e) {}
         }
@@ -559,39 +551,27 @@ async function handleIncomingMessage(msg) {
 //                    WEB SERVER
 // ===================================================================
 const app = express();
-
 app.get('/', async (req, res) => {
     const status = isBotPaused ? 'PAUSED' : (currentQR ? 'WAITING QR' : 'ACTIVE');
-    const up = Math.floor((Date.now() - messageStats.startTime) / 60000);
     const s = storage.getStats();
-
     if (currentQR) {
         try {
             const qrImage = await QRCode.toDataURL(currentQR, { width: 400, margin: 2 });
-            res.send(`<html><head><title>QR</title></head>
-                <body style="text-align:center;font-family:Arial;padding:20px;background:#0f0f0f;color:#fff;">
-                <h1 style="color:#00BFFF;">J.A.R.V.I.S</h1>
-                <img src="${qrImage}" style="width:400px;height:400px;border:10px solid white;border-radius:10px;background:#fff;"/>
-                <script>setTimeout(()=>location.reload(),20000);</script>
-                </body></html>`);
-        } catch (e) { res.send('QR error: ' + e.message); }
+            res.send(`<html><body style="text-align:center;padding:20px;background:#111;color:#fff;">
+                <h1 style="color:#25D366;">WhatsApp Bot</h1>
+                <img src="${qrImage}" style="width:400px;border:10px solid white;border-radius:10px;"/>
+                <script>setTimeout(()=>location.reload(),20000);</script></body></html>`);
+        } catch (e) { res.send('QR error'); }
     } else {
-        res.send(`<html><head><title>JARVIS</title></head>
-            <body style="text-align:center;font-family:Arial;padding:50px;background:#0f0f0f;color:#fff;">
-            <h1 style="color:#00BFFF;">J.A.R.V.I.S</h1>
-            <h2 style="color:#25D366;">✅ ${status}</h2>
-            <p>Owner: ${PROFILE.owner.name}</p>
-            <p>Users: ${s.totalUsers} | Msgs: ${s.totalMessages}</p>
-            <p>Sent: ${messageStats.sent} | Gemini: ${messageStats.geminiUsed} | Groq: ${messageStats.groqUsed}</p>
-            <p>Uptime: ${up}m</p>
-            <script>setTimeout(()=>location.reload(),15000);</script>
-            </body></html>`);
+        res.send(`<html><body style="text-align:center;padding:50px;background:#111;color:#fff;">
+            <h1 style="color:#25D366;">✅ ${status}</h1>
+            <p>Users: ${s.totalUsers} | Msgs: ${s.totalMessages} | Sent: ${messageStats.sent}</p>
+            <script>setTimeout(()=>location.reload(),15000);</script></body></html>`);
     }
 });
 
 app.listen(CONFIG.PORT, () => {
     console.log(`[SERVER] Port ${CONFIG.PORT}`);
-    console.log(`[JARVIS] Owner: ${PROFILE.owner.name}`);
     console.log(`[AI] Gemini: ${CONFIG.GEMINI_KEY ? 'Yes' : 'No'} | Groq: ${CONFIG.GROQ_KEY ? 'Yes' : 'No'}`);
 });
 
@@ -601,7 +581,6 @@ app.listen(CONFIG.PORT, () => {
 async function connectToWhatsApp() {
     try {
         await restoreAuthFromGitHub();
-
         const { state, saveCreds } = await useMultiFileAuthState('auth_info');
         sock = makeWASocket({
             auth: state,
@@ -617,22 +596,18 @@ async function connectToWhatsApp() {
 
         sock.ev.on('connection.update', (update) => {
             const { connection, lastDisconnect, qr } = update;
-            if (qr) {
-                currentQR = qr;
-                console.log('[QR] NEW QR - Open Railway URL');
-            }
+            if (qr) { currentQR = qr; console.log('[QR] NEW QR'); }
             if (connection === 'close') {
                 currentQR = null;
                 const code = (lastDisconnect.error instanceof Boom) ? lastDisconnect.error.output?.statusCode : 0;
-                const shouldReconnect = code !== DisconnectReason.loggedOut;
-                if (shouldReconnect) {
+                if (code !== DisconnectReason.loggedOut) {
                     reconnectAttempts++;
                     setTimeout(connectToWhatsApp, Math.min(5000 * reconnectAttempts, 60000));
                 }
             } else if (connection === 'open') {
                 currentQR = null;
                 reconnectAttempts = 0;
-                console.log('[CONN] ✅ CONNECTED SUCCESSFULLY!');
+                console.log('[CONN] ✅ CONNECTED!');
                 backupAuthToGitHub(true).catch(() => {});
                 if (storage.CONFIG.BACKUP_ON_START) storage.backupAll();
             }
@@ -653,16 +628,13 @@ async function connectToWhatsApp() {
 // ===================================================================
 //                    START
 // ===================================================================
-console.log('═══════════════════════════════════════════');
-console.log('  J.A.R.V.I.S v11.1 - Dual AI (Updated)');
-console.log(`  Owner: ${PROFILE.owner.name}`);
-console.log(`  Gemini: ${CONFIG.GEMINI_KEY ? 'Enabled' : 'Disabled'}`);
-console.log(`  Groq: ${CONFIG.GROQ_KEY ? 'Enabled' : 'Disabled'}`);
-console.log('═══════════════════════════════════════════');
+console.log('═══════════════════════════════════');
+console.log('  NORANG AI v12.0');
+console.log(`  Gemini: ${CONFIG.GEMINI_KEY ? 'On' : 'Off'} | Groq: ${CONFIG.GROQ_KEY ? 'On' : 'Off'}`);
+console.log('═══════════════════════════════════');
 connectToWhatsApp();
 
 setInterval(() => backupAuthToGitHub().catch(() => {}), 10 * 60 * 1000);
 setInterval(() => storage.cleanupOldUsers(), 24 * 60 * 60 * 1000);
-
 process.on('SIGINT', async () => { await backupAuthToGitHub(true).catch(() => {}); storage.backupAll(); process.exit(0); });
 process.on('SIGTERM', async () => { await backupAuthToGitHub(true).catch(() => {}); storage.backupAll(); process.exit(0); });
