@@ -1,6 +1,6 @@
 // ===================================================================
-//  JARVIS-STYLE AI ASSISTANT v11.0
-//  Dual AI: Gemini + Groq (Auto Fallback)
+//  JARVIS-STYLE AI ASSISTANT v11.1
+//  Dual AI: Gemini + Groq (Updated 2026 Models)
 //  Owner: Norang Ali Shah
 // ===================================================================
 
@@ -151,18 +151,18 @@ const CONFIG = {
         MAX_HISTORY_CONTEXT: 20
     },
 
-    // Gemini models
+    // Updated Gemini models (2026)
     GEMINI_MODELS: [
         'gemini-3.6-flash',
         'gemini-flash-latest'
     ],
     GEMINI_VERSIONS: ['v1beta'],
 
-    // Groq models (fallback)
+    // Updated Groq models (2026) - Purane decommission ho chuke hain
     GROQ_MODELS: [
-        'llama-3.3-70b-versatile',
-        'llama-3.1-70b-versatile',
-        'mixtral-8x7b-32768'
+        'openai/gpt-oss-120b',
+        'qwen/qwen3.6-27b',
+        'openai/gpt-oss-20b'
     ]
 };
 
@@ -293,7 +293,7 @@ async function callGemini(contents, isLong = false) {
                         { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_ONLY_HIGH' },
                         { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_ONLY_HIGH' }
                     ]
-                }, { timeout: 30000 });
+                }, { timeout: 25000 });
                 const reply = res.data?.candidates?.[0]?.content?.parts?.[0]?.text;
                 if (reply) {
                     console.log(`[GEMINI] ✅ ${version}/${model}`);
@@ -314,7 +314,6 @@ async function callGemini(contents, isLong = false) {
 async function callGroq(contents, isLong = false) {
     if (!CONFIG.GROQ_KEY) return null;
 
-    // Convert Gemini format to Groq/OpenAI format
     const messages = [
         { role: 'system', content: getSystemPrompt() }
     ];
@@ -339,7 +338,7 @@ async function callGroq(contents, isLong = false) {
                     'Authorization': `Bearer ${CONFIG.GROQ_KEY}`,
                     'Content-Type': 'application/json'
                 },
-                timeout: 30000
+                timeout: 25000
             });
             const reply = res.data?.choices?.[0]?.message?.content;
             if (reply) {
@@ -358,14 +357,12 @@ async function callGroq(contents, isLong = false) {
 //               AI CALL - SMART ROUTER
 // ===================================================================
 async function callAI(contents, isLong = false) {
-    // Try Gemini first
     let reply = await callGemini(contents, isLong);
     if (reply) {
         messageStats.geminiUsed++;
         return reply;
     }
 
-    // Fallback to Groq
     console.log('[AI] Gemini failed, trying Groq...');
     reply = await callGroq(contents, isLong);
     if (reply) {
@@ -657,7 +654,7 @@ async function connectToWhatsApp() {
 //                    START
 // ===================================================================
 console.log('═══════════════════════════════════════════');
-console.log('  J.A.R.V.I.S v11.0 - Dual AI');
+console.log('  J.A.R.V.I.S v11.1 - Dual AI (Updated)');
 console.log(`  Owner: ${PROFILE.owner.name}`);
 console.log(`  Gemini: ${CONFIG.GEMINI_KEY ? 'Enabled' : 'Disabled'}`);
 console.log(`  Groq: ${CONFIG.GROQ_KEY ? 'Enabled' : 'Disabled'}`);
