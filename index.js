@@ -68,7 +68,7 @@ async function connectToWhatsApp() {
         if (connection === 'close') {
             currentQR = null;
             const shouldReconnect = (lastDisconnect.error instanceof Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log('Connection closed. Reconnecting:', shouldReconnect);
+            console.log('Connection closed. Reconnecting: ' + shouldReconnect);
             if (shouldReconnect) {
                 connectToWhatsApp();
             }
@@ -90,7 +90,8 @@ async function connectToWhatsApp() {
             if (!text) return;
             console.log('Message from ' + from + ': ' + text);
 
-            const models = ['gemini-2.0-flash', 'gemini-1.5-flash'];
+            // Updated models - Google ne purane band kar diye hain
+            const models = ['gemini-3.6-flash', 'gemini-2.5-flash', 'gemini-2.0-flash'];
             let aiReply = null;
 
             for (const model of models) {
@@ -116,7 +117,7 @@ async function connectToWhatsApp() {
             await sock.sendMessage(from, { text: aiReply });
             console.log('Replied to ' + from + ': ' + aiReply);
         } catch (error) {
-            console.error('Error:', error.message);
+            console.error('Error: ' + error.message);
         }
     });
 }
