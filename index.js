@@ -1,7 +1,8 @@
 // ===================================================================
-//  JARVIS-STYLE AI ASSISTANT v10.0
+//  JARVIS-STYLE AI ASSISTANT v10.1
 //  Multi-User Context System
 //  Owner: Norang Ali Shah
+//  Updated: New Gemini 3.6 Models
 // ===================================================================
 
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
@@ -55,14 +56,15 @@ const CONFIG = {
         LONG_MSG_DELAY_MAX: 12000,
         TYPING_BEFORE_REPLY: true,
         SEND_READ_RECEIPT: true,
-        MAX_HISTORY_CONTEXT: 20,   // API ko bhejne se pehle last 20 messages
+        MAX_HISTORY_CONTEXT: 20,
         RATE_LIMIT_PER_MINUTE: 30
     },
 
+    // Updated models - Google ne purane band kar diye
     MODELS: [
+        'gemini-3.6-flash',
         'gemini-2.5-flash',
-        'gemini-2.0-flash',
-        'gemini-2.0-flash-lite'
+        'gemini-2.0-flash-exp'
     ]
 };
 
@@ -79,7 +81,7 @@ const messageStats = {
 };
 
 // ===================================================================
-//               SYSTEM PROMPT (CONSTANT - SAME FOR ALL USERS)
+//               SYSTEM PROMPT (CONSTANT FOR ALL USERS)
 // ===================================================================
 function getSystemPrompt() {
     const o = PROFILE.owner;
@@ -155,9 +157,6 @@ function needsDetailedAnswer(text) {
 //                     AI CALL (MULTI-USER AWARE)
 // ===================================================================
 async function callGeminiWithHistory(contents, isLong = false) {
-    // contents = [{ role: "user"/"model", parts: [{ text }] }, ...]
-    // systemInstruction = constant prompt
-
     const systemInstruction = {
         parts: [{ text: getSystemPrompt() }]
     };
@@ -194,7 +193,7 @@ async function callGeminiWithHistory(contents, isLong = false) {
 }
 
 // ===================================================================
-//                   MESSAGE HANDLER (CORE LOGIC)
+//                   MESSAGE HANDLER (CORE)
 // ===================================================================
 async function handleTextMessage(msg, from, text) {
     const userId = storage.extractUserId(from);
@@ -204,18 +203,17 @@ async function handleTextMessage(msg, from, text) {
     const user = storage.loadUser(userId, from);
     console.log(`[HISTORY] ${userId} has ${user.history.length} past messages`);
 
-    // Step 2: Append user's new message to history
+    // Step 2: Append user's new message
     storage.appendMessage(user, 'user', text);
 
-    // Step 3: Build contents array for API
-    //     - Take last N messages for context window
+    // Step 3: Build contents array
     const recentHistory = user.history.slice(-CONFIG.BEHAVIOR.MAX_HISTORY_CONTEXT);
     const contents = recentHistory.map(m => ({
         role: m.role === 'user' ? 'user' : 'model',
         parts: [{ text: m.text }]
     }));
 
-    // Step 4: Typing indicator + human delay
+    // Step 4: Typing indicator + delay
     if (CONFIG.BEHAVIOR.TYPING_BEFORE_REPLY) {
         try { await sock.sendPresenceUpdate('composing', from); } catch (e) {}
     }
@@ -226,7 +224,7 @@ async function handleTextMessage(msg, from, text) {
         : randomInt(CONFIG.BEHAVIOR.LONG_MSG_DELAY_MIN, CONFIG.BEHAVIOR.LONG_MSG_DELAY_MAX);
     await sleep(delay);
 
-    // Step 5: Call Gemini with system instruction + user-specific history
+    // Step 5: Call Gemini
     let aiReply = await callGeminiWithHistory(contents, detailed);
 
     if (!aiReply) {
@@ -239,15 +237,14 @@ async function handleTextMessage(msg, from, text) {
         .replace(/^["']|["']$/g, '')
         .replace(/^(Friend|You|User|Model):\s*/i, '');
 
-    // Step 7: Stop typing, send reply
+    // Step 7: Stop typing, send
     try { await sock.sendPresenceUpdate('paused', from); } catch (e) {}
-
     await sock.sendMessage(from, { text: aiReply });
 
-    // Step 8: Append AI reply to user's history
+    // Step 8: Append AI reply
     storage.appendMessage(user, 'model', aiReply);
 
-    // Step 9: Save user's history to file
+    // Step 9: Save user
     storage.saveUser(user);
 
     messageStats.sent++;
@@ -280,14 +277,12 @@ async function handleMediaMessage(msg, from) {
     try { await sock.sendPresenceUpdate('composing', from); } catch (e) {}
     await sleep(randomInt(3000, 7000));
 
-    // Add context to history temporarily for AI
     const recentHistory = user.history.slice(-CONFIG.BEHAVIOR.MAX_HISTORY_CONTEXT);
     const contents = recentHistory.map(m => ({
         role: m.role === 'user' ? 'user' : 'model',
         parts: [{ text: m.text }]
     }));
 
-    // Add the media situation as an instruction to AI
     contents.push({
         role: 'user',
         parts: [{ text: `[SYSTEM: ${mediaDesc}. You cannot see/hear it, but reply naturally like a friend. Be spontaneous, not templated.]` }]
@@ -447,6 +442,7 @@ app.listen(CONFIG.PORT, () => {
     console.log(`[SERVER] Port ${CONFIG.PORT}`);
     console.log(`[JARVIS] Owner: ${PROFILE.owner.name}`);
     console.log(`[MODE] 24/7 | Multi-User Context`);
+    console.log(`[MODELS] ${CONFIG.MODELS.join(', ')}`);
 });
 
 // ===================================================================
@@ -483,7 +479,6 @@ async function connectToWhatsApp() {
                 reconnectAttempts = 0;
                 console.log('[CONN] ✅ CONNECTED SUCCESSFULLY!');
                 console.log('[JARVIS] Multi-user mode active, Sir.');
-                // Startup backup
                 if (storage.CONFIG.BACKUP_ON_START) storage.backupAll();
             }
         });
@@ -504,8 +499,9 @@ async function connectToWhatsApp() {
 //                    START
 // ===================================================================
 console.log('═══════════════════════════════════════════');
-console.log('  J.A.R.V.I.S v10.0 - Multi-User Edition');
+console.log('  J.A.R.V.I.S v10.1 - Multi-User Edition');
 console.log(`  Owner: ${PROFILE.owner.name}`);
+console.log(`  Models: ${CONFIG.MODELS.join(', ')}`);
 console.log(`  Max history/user: ${storage.CONFIG.MAX_HISTORY_PER_USER}`);
 console.log(`  Cleanup after: ${storage.CONFIG.CLEANUP_DAYS} days`);
 console.log('═══════════════════════════════════════════');
