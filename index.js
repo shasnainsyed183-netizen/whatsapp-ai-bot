@@ -1,7 +1,7 @@
 // ===================================================================
-//  NORANG AI v17.0 - COMPLETE SINGLE-FILE WHATSAPP BOT
+//  NORANG AI v18.0 - COMPLETE SINGLE-FILE WHATSAPP BOT
 //  Author: Norang Ali Shah
-//  Features: Role-based, Dual AI, Multi-user, Auth backup, Strict rules
+//  Features: Preset roles, Dual AI, Multi-user, Auth backup, Strict rules
 //  ===================================================================
 
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
@@ -24,7 +24,6 @@ const STORAGE_CONFIG = {
     BACKUP_ON_START: true
 };
 
-// Ensure folders exist
 [STORAGE_CONFIG.DATA_DIR, STORAGE_CONFIG.USERS_DIR, STORAGE_CONFIG.BACKUP_DIR].forEach(dir => {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
@@ -51,7 +50,7 @@ const storage = {
                 note: null,
                 closeness: 'normal',
                 language: null,
-                role: 'friend'  // teacher | close_friend | low_friend | family | stranger | friend
+                role: 'friend'
             }
         };
     },
@@ -147,7 +146,60 @@ const storage = {
 };
 
 // ===================================================================
-//              SECTION 2: GITHUB AUTH BACKUP
+//              SECTION 2: PRESET CONTACTS (Roles)
+// ===================================================================
+// Apne contacts ke roles yahan set karein. Bot start hote hi automatic load honge.
+// Aap kabhi bhi yahan add/edit kar sakte hain.
+const PRESET_CONTACTS = {
+    // ===== CLOSE FRIENDS =====
+    "923032968434": {
+        role: "close_friend",
+        name: "Abdul Haleem",
+        note: "Classmate in university, hostel roommate"
+    },
+    "923482887184": {
+        role: "close_friend",
+        name: "Sameer Ahmed",
+        note: "Uni mate, also hostel roommate"
+    },
+
+    // ===== TEACHERS =====
+    "923153643080": {
+        role: "teacher",
+        name: "Hasnain Shah",
+        note: "Teacher"
+    }
+
+    // ===== Zyada contacts add karne ke liye ye pattern use karein: =====
+    // "923XXXXXXXXX": { role: "family", name: "Name", note: "Relation" },
+    // "923XXXXXXXXX": { role: "low_friend", name: "Name", note: "Occasional" },
+    // "923XXXXXXXXX": { role: "stranger", name: "Unknown" },
+};
+
+function initializePresetContacts() {
+    console.log('═══════════════════════════════════');
+    console.log('[PRESET] Loading preset contacts...');
+    let loaded = 0;
+    for (const [number, info] of Object.entries(PRESET_CONTACTS)) {
+        try {
+            const user = storage.loadUser(number);
+            if (!user.metadata) user.metadata = {};
+            user.metadata.role = info.role;
+            user.metadata.name = info.name;
+            if (info.note) user.metadata.note = info.note;
+            storage.saveUser(user);
+            loaded++;
+            console.log(`[PRESET] ✅ ${number} → ${info.name} (${info.role})`);
+        } catch (err) {
+            console.error(`[PRESET] Error for ${number}:`, err.message);
+        }
+    }
+    console.log(`[PRESET] Loaded ${loaded} contacts`);
+    console.log('═══════════════════════════════════');
+}
+
+// ===================================================================
+//              SECTION 3: GITHUB AUTH BACKUP
 // ===================================================================
 const GITHUB_AUTH = {
     TOKEN: process.env.GITHUB_AUTH_TOKEN,
@@ -229,7 +281,7 @@ async function backupAuthToGitHub(force = false) {
 }
 
 // ===================================================================
-//              SECTION 3: PROFILE DATA
+//              SECTION 4: PROFILE DATA
 // ===================================================================
 let PROFILE = {
     owner: {
@@ -258,7 +310,7 @@ try {
 } catch (e) {}
 
 // ===================================================================
-//              SECTION 4: CONFIGURATION
+//              SECTION 5: CONFIGURATION
 // ===================================================================
 const CONFIG = {
     GEMINI_KEY: process.env.GEMINI_KEY,
@@ -286,7 +338,7 @@ const CONFIG = {
 };
 
 // ===================================================================
-//              SECTION 5: STATE
+//              SECTION 6: STATE
 // ===================================================================
 let sock = null;
 let currentQR = null;
@@ -299,17 +351,20 @@ const messageStats = {
 };
 
 // ===================================================================
-//              SECTION 6: SYSTEM PROMPT (STRICT)
+//              SECTION 7: SYSTEM PROMPT (STRICT)
 // ===================================================================
 function getSystemPrompt(contactInfo = {}) {
     const o = PROFILE.owner;
     const role = contactInfo.role || 'friend';
+    const contactName = contactInfo.name || '';
     const contactNote = contactInfo.note ? `\n[Contact Note]: ${contactInfo.note}` : '';
+    const nameLine = contactName ? `\n[You are talking to: ${contactName}]` : '';
 
     let prompt = `[IDENTITY & CONTEXT]
 You are Norang Ali Shah - a REAL 21-year-old Pakistani guy from Karachi, chatting on WhatsApp.
 You are NOT an AI, NOT a bot, NOT an assistant. You ARE Norang.
 The person messaging is contacting YOUR WhatsApp number.
+${nameLine}${contactNote}
 
 [WHATSAPP CONTEXT]
 - This is WhatsApp, NOT email. NO long paragraphs.
@@ -334,12 +389,12 @@ The person messaging is contacting YOUR WhatsApp number.
 - Match user's language: English→English, Roman Urdu→Roman Urdu, Mixed→Mixed.
 - Common words (friends only): "yaar", "bhai", "hmm", "acha", "theek", "bas", "kya".
 - Casual WhatsApp capitalization.
-- NO bold/italic headings unless user asks a real question (then use *bold* sparingly).
+- NO bold/italic headings unless user asks a real question.
 
 [CONVERSATION FLOW]
 - User 1-word reply ("ok", "hmm") → You reply 1 word or stay silent.
 - User short msg → Short reply (1-2 lines).
-- User real question → Detailed answer (5-10 lines with proper structure).
+- User real question → Detailed answer (5-10 lines).
 - User 2-3 dismissive replies in a row → STOP replying.
 - User says "gtg"/"busy"/"baad me baat" → Reply "ok" / "chal theek hai" and STOP.
 
@@ -350,28 +405,28 @@ The person messaging is contacting YOUR WhatsApp number.
 
 [CONVERSATION CLOSING INDICATORS]
 If user says any of: "thanks", "thank you", "ok", "okay", "shukriya", "jazakallah", "allah hafiz", "bye", "sahi hai", "theek hai", "phir baat hoti hai", "tc", "take care"
-→ DO NOT start new topic. DO NOT ask questions. Briefly acknowledge and end.
-${contactNote}`;
+→ DO NOT start new topic. DO NOT ask questions. Briefly acknowledge and end.`;
 
-    // Role-specific
     if (role === 'teacher') {
         prompt += `
 
 [ROLE: TEACHER / SENIOR / PROFESSOR]
 - Tone: HIGHLY respectful, formal, polite.
 - Address as "Sir" or "Ma'am".
-- 🚫 STRICTLY BANNED words: "bhai", "yaar", "bro", "chal", "scene", "lol", "hmm", "sahi", "jani".
+- 🚫 STRICTLY BANNED words: "bhai", "yaar", "bro", "chal", "scene", "lol", "hmm", "sahi", "jani", "tu".
 - Give direct answers with proper grammar. No jokes, no sarcasm.
 - Keep replies short, precise, directly answering.
 - NEVER ask unnecessary open-ended follow-up questions.
+- Use "aap" not "tu", "Sir" not "bhai".
 - Example: "Assignment kyun nahi bheji?" → "Sir, main assignment complete kar raha hoon. Shaam tak upload kar doonga."
+- Example: "Kaise ho?" → "Main theek hoon, Sir. Aap batayein."
 - Closing: "Thank you, Sir. Have a great day ahead!"`;
     } else if (role === 'close_friend') {
         prompt += `
 
 [ROLE: CLOSE FRIEND]
 - Tone: Casual, relaxed, friendly, slightly witty/sarcastic.
-- Allowed: "yaar", "bhai", "bro", "jani", "kya scene", "sahi hai".
+- Allowed: "yaar", "bhai", "bro", "jani", "kya scene", "sahi hai", "tu".
 - Short energetic replies. Joke around. Be yourself.
 - Closing: "Sahi hai jani, baad me baat hoti hai 👍"`;
     } else if (role === 'low_friend') {
@@ -409,7 +464,7 @@ ${contactNote}`;
 
 [ACCURACY RULE]
 If you do not have specific information about Norang's schedule, tasks, or personal plans:
-→ Politely say: "Main Norang se confirm karke bata deta hoon" / "Norang ko forward kar deta hoon"
+→ Politely say: "Main Norang se confirm karke bata deta hoon"
 → NEVER make up fake facts.
 
 [FINAL REMINDERS]
@@ -423,7 +478,7 @@ If you do not have specific information about Norang's schedule, tasks, or perso
 }
 
 // ===================================================================
-//              SECTION 7: HELPERS
+//              SECTION 8: HELPERS
 // ===================================================================
 function randomInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -436,12 +491,6 @@ function isDismissiveReply(text) {
     const t = text.trim().toLowerCase().replace(/[^a-z\s]/g, '');
     const dismissive = ['ok', 'okay', 'okey', 'hmm', 'hm', 'acha', 'achaa', 'theek', 'thik', 'fine', 'k', 'kk', 'han', 'haan', 'hn', 'ji', 'good', 'nice', 'sahi', 'sahii'];
     return dismissive.includes(t) || t.length <= 2;
-}
-
-function isClosingIndicator(text) {
-    const t = text.trim().toLowerCase();
-    const closingWords = ['thanks', 'thank you', 'shukriya', 'jazakallah', 'allah hafiz', 'bye', 'take care', 'tc', 'phir baat hoti hai'];
-    return closingWords.some(w => t.includes(w));
 }
 
 function countRecentDismissive(user, limit = 5) {
@@ -461,7 +510,7 @@ function needsDetailedAnswer(text) {
 }
 
 // ===================================================================
-//              SECTION 8: AI CALLS
+//              SECTION 9: AI CALLS
 // ===================================================================
 async function callGemini(contents, systemPrompt, isLong = false) {
     if (!CONFIG.GEMINI_KEY) return null;
@@ -532,7 +581,7 @@ async function callAI(contents, systemPrompt, isLong = false) {
 }
 
 // ===================================================================
-//              SECTION 9: MESSAGE HANDLER
+//              SECTION 10: MESSAGE HANDLER
 // ===================================================================
 async function handleTextMessage(msg, from, text) {
     const userId = storage.extractUserId(from);
@@ -540,11 +589,11 @@ async function handleTextMessage(msg, from, text) {
 
     const user = storage.loadUser(userId, from);
     const role = user.metadata?.role || 'friend';
-    console.log(`[HISTORY] ${user.history.length} msgs | Role: ${role}`);
+    const name = user.metadata?.name || 'Unknown';
+    console.log(`[HISTORY] ${user.history.length} msgs | Role: ${role} | Name: ${name}`);
 
     storage.appendMessage(user, 'user', text);
 
-    // Silence rule: 4+ dismissive
     const dismissiveCount = countRecentDismissive(user, 6);
     if (dismissiveCount >= 4) {
         console.log(`[SILENT] Disinterested (${dismissiveCount})`);
@@ -579,7 +628,6 @@ async function handleTextMessage(msg, from, text) {
         .replace(/^["']|["']$/g, '')
         .replace(/^(Friend|You|User|Model|Assistant|Norang):\s*/i, '');
 
-    // Trim long reply for dismissive
     if (isDismissiveReply(text) && dismissiveCount >= 2 && aiReply.length > 50) {
         const shortOptions = ['hmm', 'ok', 'acha', 'theek'];
         aiReply = shortOptions[Math.floor(Math.random() * shortOptions.length)];
@@ -596,7 +644,7 @@ async function handleTextMessage(msg, from, text) {
 }
 
 // ===================================================================
-//              SECTION 10: MEDIA HANDLER
+//              SECTION 11: MEDIA HANDLER
 // ===================================================================
 async function handleMediaMessage(msg, from) {
     const m = msg.message;
@@ -636,7 +684,7 @@ async function handleMediaMessage(msg, from) {
 }
 
 // ===================================================================
-//              SECTION 11: OWNER COMMANDS
+//              SECTION 12: OWNER COMMANDS
 // ===================================================================
 async function handleOwnerCommand(msg, from, text) {
     const cmd = text.toLowerCase().trim();
@@ -681,12 +729,22 @@ async function handleOwnerCommand(msg, from, text) {
         return true;
     }
 
+    if (cmd === '!presets') {
+        let text = '📋 *Preset Contacts:*\n\n';
+        for (const [num, info] of Object.entries(PRESET_CONTACTS)) {
+            text += `• ${info.name} (${info.role})\n  ${num}\n`;
+        }
+        await reply(text);
+        return true;
+    }
+
     if (cmd.startsWith('!history ')) {
         const targetId = cmd.substring(9).trim().replace(/\D/g, '');
         const u = storage.loadUser(targetId);
         const role = u.metadata?.role || 'friend';
+        const name = u.metadata?.name || 'Unknown';
         const lines = u.history.slice(-8).map(h => `[${h.role}] ${h.text.substring(0, 60)}`).join('\n');
-        await reply(`Role: ${role}\n\n${lines || 'no history'}`);
+        await reply(`Name: ${name}\nRole: ${role}\n\n${lines || 'no history'}`);
         return true;
     }
 
@@ -700,7 +758,7 @@ async function handleOwnerCommand(msg, from, text) {
     }
 
     if (cmd === '!help') {
-        await reply(`*Commands:*\n!pause, !resume, !ping\n!stats, !roles, !backup\n!history NUM, !clear NUM`);
+        await reply(`*Commands:*\n!pause, !resume, !ping\n!stats, !roles, !presets, !backup\n!history NUM, !clear NUM`);
         return true;
     }
 
@@ -708,7 +766,7 @@ async function handleOwnerCommand(msg, from, text) {
 }
 
 // ===================================================================
-//              SECTION 12: MESSAGE ROUTER
+//              SECTION 13: MESSAGE ROUTER
 // ===================================================================
 async function handleIncomingMessage(msg) {
     try {
@@ -746,7 +804,7 @@ async function handleIncomingMessage(msg) {
 }
 
 // ===================================================================
-//              SECTION 13: WEB SERVER
+//              SECTION 14: WEB SERVER
 // ===================================================================
 const app = express();
 app.get('/', async (req, res) => {
@@ -778,7 +836,7 @@ app.listen(CONFIG.PORT, () => {
 });
 
 // ===================================================================
-//              SECTION 14: WHATSAPP CONNECTION
+//              SECTION 15: WHATSAPP CONNECTION
 // ===================================================================
 async function connectToWhatsApp() {
     try {
@@ -825,14 +883,18 @@ async function connectToWhatsApp() {
 }
 
 // ===================================================================
-//              SECTION 15: START
+//              SECTION 16: START
 // ===================================================================
 console.log('═══════════════════════════════════');
-console.log('  NORANG AI v17.0 - Complete');
+console.log('  NORANG AI v18.0 - Preset Contacts');
 console.log(`  Owner: ${PROFILE.owner.name}`);
 console.log(`  Gemini: ${CONFIG.GEMINI_KEY ? 'On' : 'Off'} | Groq: ${CONFIG.GROQ_KEY ? 'On' : 'Off'}`);
 console.log(`  Temp: ${CONFIG.BEHAVIOR.TEMPERATURE}`);
 console.log('═══════════════════════════════════');
+
+// Load preset contacts FIRST (before WhatsApp connects)
+initializePresetContacts();
+
 connectToWhatsApp();
 
 setInterval(() => backupAuthToGitHub().catch(() => {}), 10 * 60 * 1000);
