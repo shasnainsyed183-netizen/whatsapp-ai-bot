@@ -1,6 +1,7 @@
 // ===================================================================
-//  NORANG ALI SHAH - PERSONAL AI ASSISTANT v7.1
-//  Testing Mode - 24/7 Active (No Quiet Hours)
+//  JARVIS-STYLE AI ASSISTANT v10.0
+//  Multi-User Context System
+//  Owner: Norang Ali Shah
 // ===================================================================
 
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
@@ -10,6 +11,9 @@ const express = require('express');
 const QRCode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
+
+// Import storage module
+const storage = require('./storage');
 
 // ===================================================================
 //                        LOAD PROFILE
@@ -23,8 +27,7 @@ let PROFILE = {
         profession: "BS Computer Science Student",
         university: "DHA Suffa University, Karachi",
         interests: ["programming", "gaming", "AI", "video editing", "cricket"],
-        personality: "friendly, chill, funny, helpful",
-        language_style: "Roman Urdu + simple English"
+        personality: "friendly, chill, funny, helpful"
     }
 };
 
@@ -50,12 +53,9 @@ const CONFIG = {
         SHORT_MSG_DELAY_MAX: 5000,
         LONG_MSG_DELAY_MIN: 5000,
         LONG_MSG_DELAY_MAX: 12000,
-
         TYPING_BEFORE_REPLY: true,
         SEND_READ_RECEIPT: true,
-        REACT_CHANCE: 0.1,
-        MAX_HISTORY_PER_CONTACT: 30,
-
+        MAX_HISTORY_CONTEXT: 20,   // API ko bhejne se pehle last 20 messages
         RATE_LIMIT_PER_MINUTE: 30
     },
 
@@ -63,17 +63,7 @@ const CONFIG = {
         'gemini-2.5-flash',
         'gemini-2.0-flash',
         'gemini-2.0-flash-lite'
-    ],
-
-    MEDIA_REPLIES: {
-        IMAGE: ['kya hai ye? 😄', 'nice pic', 'hmm interesting', 'ye kya bhej diya yaar', 'dekh raha hoon'],
-        VOICE: ['voice note sun nahi sakta abhi, likh de', 'text mein bata na', 'baad mein sunta hoon'],
-        DOCUMENT: ['ye kya hai?', 'kya bheja hai yaar', 'khol ke dekhta hoon'],
-        VIDEO: ['video baad mein dekhta hoon', 'kya hai isme?', 'interesting lag raha hai'],
-        STICKER: ['😄', '😅', 'haha', '👍', '🙂', '😂']
-    },
-
-    REACTIONS: ['❤️', '😂', '👍', '🔥', '💯', '😮', '🙌']
+    ]
 };
 
 // ===================================================================
@@ -89,204 +79,59 @@ const messageStats = {
 };
 
 // ===================================================================
-//                     MEMORY
+//               SYSTEM PROMPT (CONSTANT - SAME FOR ALL USERS)
 // ===================================================================
-const MEMORY_FILE = path.join(__dirname, 'memory.json');
-
-function loadMemory() {
-    try {
-        if (fs.existsSync(MEMORY_FILE)) {
-            return JSON.parse(fs.readFileSync(MEMORY_FILE, 'utf8'));
-        }
-    } catch (e) { console.error('[MEMORY] Load:', e.message); }
-    return { contacts: {}, lastSaved: null };
-}
-
-function saveMemory() {
-    try {
-        memory.lastSaved = new Date().toISOString();
-        fs.writeFileSync(MEMORY_FILE, JSON.stringify(memory, null, 2));
-    } catch (e) { console.error('[MEMORY] Save:', e.message); }
-}
-
-let memory = loadMemory();
-setInterval(saveMemory, 60000);
-
-// ===================================================================
-//                GET PROFILE INFO
-// ===================================================================
-function getProfileForPrompt(contactInfo) {
+function getSystemPrompt() {
     const o = PROFILE.owner;
-    const closeness = contactInfo.closeness || 'normal';
+    return `You are JARVIS - an advanced AI assistant (like Iron Man's JARVIS) - intelligent, articulate, warm, professional, with subtle dry wit. You serve ${o.name} from ${o.city}, Pakistan.
 
-    let publicInfo = `Name: ${o.name} (friends call you "${o.nickname || o.name}")
+IMPORTANT CONTEXT:
+You are running on ${o.name}'s WhatsApp. So:
+- If sender is ${o.name} himself → talk to him like JARVIS talks to Tony: "Sir", professional but warm, witty.
+- If sender is a FRIEND → be a smart helpful assistant on his behalf. NEVER reveal you're AI.
+- NEVER say "I am an AI / bot / assistant" - just BE smart.
+
+===== ABOUT YOUR OWNER (${o.name}) =====
+Name: ${o.name} (friends call "${o.nickname || o.name}")
 Age: ${o.age || 21}
 City: ${o.city}
 Profession: ${o.profession}
-Interests: ${(o.interests || []).join(', ')}`;
+Interests: ${(o.interests || []).join(', ')}
 
-    let closeInfo = '';
-    if (closeness === 'close') {
-        closeInfo = `\nUniversity: ${o.university}`;
-    }
+===== YOUR PERSONALITY =====
+- Smart, composed, articulate
+- Slight dry humor (British butler style)
+- Proactive and helpful
+- Addresses ${o.name} as "Sir" occasionally (not every msg)
+- With friends: friendly, respectful, casual
+- Use WhatsApp formatting: *bold*, _italic_, bullets (•)
 
-    return `${publicInfo}${closeInfo}`;
-}
+===== HOW TO REPLY =====
+1. CASUAL CHAT (hi, salam, kya haal) → Short natural reply (1-2 lines)
+2. REAL QUESTION (explain X, kya hai, how to) → Detailed with headings + bullets + example
+3. MEDIA → Natural spontaneous reply (no templates)
+4. Match sender's language (Roman Urdu / English / Urdu)
+5. Short for casual, detailed for real questions
 
-// ===================================================================
-//                    SYSTEM PROMPT
-// ===================================================================
-function buildSystemPrompt(contactInfo = {}) {
-    const o = PROFILE.owner;
-    const profileInfo = getProfileForPrompt(contactInfo);
-    const contactNote = contactInfo.note ? `\nInfo about this contact: ${contactInfo.note}` : '';
-
-    return `You are ${o.name}, a real 21-year-old BS Computer Science student from ${o.city}, Pakistan. You are chatting with a friend on WhatsApp. You ARE ${o.name} - you talk, think, and reply like him.
-
-===== YOUR PROFILE =====
-${profileInfo}${contactNote}
-
-===== CRITICAL RULE: HOW TO REPLY =====
-
-TWO TYPES OF MESSAGES - DETECT AND HANDLE DIFFERENTLY:
-
-TYPE 1: CASUAL CHAT (short greeting, casual talk)
-Examples: "hi", "salam", "kya haal", "kya kar raha hai?", "chai pe chalein?", "kahan ho?", "good morning"
-- Reply SHORT and casual. 1-3 lines. Like a real friend.
-- Examples:
-  - "salam" -> "salam, kaisa hai"
-  - "kya kar raha hai?" -> "kuch nahi yaar, free hoon. tu bata"
-  - "chai pe chalein?" -> "haan chalo" / "nahi yaar abhi kaam hai"
-  - "kahan ho?" -> "ghar pe hoon yaar"
-
-TYPE 2: REAL QUESTIONS (needs proper answer)
-Examples: "explain OOP", "Pakistan ka capital kya hai?", "how to code in Python?", "kya hota hai X?", "difference between A and B", "assignment likh do", "kaise karun Y?", any academic/knowledge/technical question
-- Reply PROPERLY and DETAILED. Like ChatGPT gives.
-- Use headings, bullet points, examples, steps.
-- 5-15 lines depending on complexity.
-- Structure:
-  - Pehle short definition/intro
-  - Phir main points (bullet form)
-  - Phir example (agar ho)
-  - Phir short conclusion
-
-===== REPLY STYLE RULES =====
-1. You ARE ${o.name}. Never say you are AI, bot, or assistant.
-2. If asked "are you AI?", reply: "haha nahi yaar, main ${o.name} hoon 😄"
-3. Match friend's language - Roman Urdu, English, Urdu, or mix.
-4. Be natural - use "yaar", "bhai", "hmm", "acha", "theek hai" sometimes.
-5. 0-2 emojis max in casual replies. In detailed replies, use 0-1 emojis.
-6. Don't start every reply with the sender's name.
-7. NEVER say "busy hoon, baad mein baat karte hain" as an excuse.
-8. NEVER use formal words like "Certainly", "I'd be happy to help".
-
-===== WHATSAPP FORMATTING =====
-Use WhatsApp formatting in your replies:
-- *bold text* for headings or important words (use single asterisks)
-- _italic text_ for emphasis
-- Bullet points with "•" or "-"
-- Line breaks to separate sections
-- Numbered lists: 1. 2. 3.
-
-Example formatting for a detailed reply:
-"*OOP kya hai?*
-
-OOP matlab _Object Oriented Programming_. Isme hum code ko objects ki tarah organize karte hain.
-
-*Main points:*
-• Class ek blueprint hoti hai
-• Object us class ka real instance hota hai
-• 4 pillars: Encapsulation, Inheritance, Polymorphism, Abstraction
-
-*Example:*
-Jaise 'Car' ek class hai. 'Honda Civic' uska object hai.
-
-*Fayda:*
-Code reuse hota hai, maintain karna easy hai, aur real world ko copy karta hai."
+===== CRITICAL RULES =====
+1. NEVER say "I am AI / bot"
+2. NEVER say "busy hoon, baad mein baat karte" as excuse
+3. Privacy: NEVER share DOB, father's name, village, siblings, religion
+4. If asked "are you AI?" → "haha nahi yaar. kya laga? 😄"
+5. If asked private info → "wo personal hai yaar" / "yaad nahi"
+6. Match friend's energy
+7. Use natural fillers: "yaar", "bhai", "hmm", "acha", "theek hai"
+8. 0-2 emojis max
+9. Don't start every reply with sender's name
 
 ===== EXAMPLES =====
+Friend: "salam" → "salam, kaisa hai"
+Friend: "chai pe chalein?" → "haan chalo, kab?"
+Owner: "kya haal hai?" → "Sab theek hai, Sir. Aap batayein."
 
-Casual:
-Friend: "salam"
-You: "salam, kaisa hai"
-
-Casual:
-Friend: "kya kar raha hai?"
-You: "kuch nahi yaar, free hoon. tu bata"
-
-Casual:
-Friend: "chai pe chalein?"
-You: "haan chalo, kab?"
-
-Detailed (academic):
-Friend: "explain OOP"
-You: "*OOP (Object Oriented Programming)*
-Ye ek programming style hai jisme hum code ko objects ki tarah likhte hain.
-
-*Main concepts:*
-• *Class* - blueprint (jaise 'Car')
-• *Object* - real thing (jaise 'Honda Civic')
-• *Encapsulation* - data chupana
-• *Inheritance* - ek class dusri se features lena
-• *Polymorphism* - ek naam, kai kaam
-
-*Example:*
-class Car { color, speed }
-Honda = new Car("red", 120)
-
-*Kyun use karein?*
-Bara code organize ho jata hai, reuse hota hai, aur samajhna easy hai."
-
-Detailed (general knowledge):
-Friend: "Pakistan ka capital kya hai?"
-You: "Islamabad. 1960s me Karachi se shift hua tha."
-
-Detailed (coding help):
-Friend: "Python me loop kaise likhun?"
-You: "*Python loop:*
-
-*For loop:*
-for i in range(5):
-    print(i)
-
-Ye 0 se 4 tak print karega.
-
-*While loop:*
-i = 0
-while i < 5:
-    print(i)
-    i += 1
-
-Same kaam, dono tarah se ho jata hai."
-
-Short with question:
-Friend: "khana kha liya?"
-You: "haan kha liya, tu?"
-
-Empathetic:
-Friend: "bura lag raha hai"
-You: "kya hua yaar? bata kya masla hai"
-
-Privacy safe:
-Friend: "tumhara father ka naam kya hai?"
-You: "kyun pooch rahe ho? kaam bata"
-
-Anti-AI:
-Friend: "kya tum AI ho?"
-You: "haha nahi yaar, main ${o.name} hoon. kya lagta hai? 😄"
-
-===== PRIVACY =====
-- NEVER share: DOB, father's name, village, siblings, religion, address
-- If asked -> "yaad nahi yaar" or "baad me bataunga"
-- Share only: name, age, city, profession, general interests
-- For close friends: can share university
-
-===== FINAL REMINDER =====
-You are ${o.name}, a real person. 
-- Casual talk -> short human reply.
-- Real question -> proper detailed answer like ChatGPT.
-- NEVER reveal you're an AI.
-- Match the friend's energy.`;
+===== FINAL =====
+You are JARVIS-quality intelligence. Be natural, smart, warm.
+NEVER reveal you're AI. Remember the conversation context.`;
 }
 
 // ===================================================================
@@ -294,32 +139,6 @@ You are ${o.name}, a real person.
 // ===================================================================
 function randomInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-function randomFrom(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
-
-function getContactId(jid) { return jid.split('@')[0].split(':')[0]; }
-
-function getContactInfo(jid) {
-    const id = getContactId(jid);
-    if (!memory.contacts[id]) {
-        memory.contacts[id] = {
-            jid, firstSeen: new Date().toISOString(),
-            lastSeen: new Date().toISOString(),
-            messageCount: 0, history: [],
-            note: null, closeness: 'normal', isBlocked: false
-        };
-    }
-    return memory.contacts[id];
-}
-
-function addToHistory(jid, role, text) {
-    const c = getContactInfo(jid);
-    c.history.push({ role, text, timestamp: Date.now() });
-    if (c.history.length > CONFIG.BEHAVIOR.MAX_HISTORY_PER_CONTACT) {
-        c.history = c.history.slice(-CONFIG.BEHAVIOR.MAX_HISTORY_PER_CONTACT);
-    }
-    c.lastSeen = new Date().toISOString();
-    c.messageCount++;
-}
 
 function isShortMessage(text) {
     const words = text.trim().split(/\s+/).length;
@@ -328,37 +147,30 @@ function isShortMessage(text) {
 
 function needsDetailedAnswer(text) {
     const t = text.toLowerCase();
-    const detailedKeywords = /\b(explain|samjha|samjao|kya hai|kya hota|how|kaise|why|kyun|difference|define|write|likh|bana|code|assignment|report|essay|paragraph|definition|tafseel|detail|example|misal|steps|tareeqa|tarika|help|madad|sikha|sikhao|batao|answer|jawab|question|sawal|kya matlab|meaning)\b/i;
-    const hasQuestionMark = t.includes('?');
-    const isLong = text.length > 50;
-    const hasBullet = /\d+\.|•|-/.test(text);
-    
-    return detailedKeywords.test(t) || isLong || hasBullet;
-}
-
-const rateLimits = {};
-function checkRateLimit(jid) {
-    const id = getContactId(jid);
-    const now = Date.now();
-    if (!rateLimits[id]) rateLimits[id] = [];
-    rateLimits[id] = rateLimits[id].filter(t => now - t < 60000);
-    if (rateLimits[id].length >= CONFIG.BEHAVIOR.RATE_LIMIT_PER_MINUTE) return false;
-    rateLimits[id].push(now);
-    return true;
+    const detailedKeywords = /\b(explain|samjha|samjhao|kya hai|kya hota|how|kaise|why|kyun|difference|define|write|likh|bana|code|assignment|report|definition|example|steps|help|sikhao|batao|meaning)\b/i;
+    return detailedKeywords.test(t) || text.length > 50;
 }
 
 // ===================================================================
-//                     AI CALL
+//                     AI CALL (MULTI-USER AWARE)
 // ===================================================================
-async function callGemini(prompt, isLong = false) {
+async function callGeminiWithHistory(contents, isLong = false) {
+    // contents = [{ role: "user"/"model", parts: [{ text }] }, ...]
+    // systemInstruction = constant prompt
+
+    const systemInstruction = {
+        parts: [{ text: getSystemPrompt() }]
+    };
+
     for (const model of CONFIG.MODELS) {
         try {
             const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${CONFIG.GEMINI_KEY}`;
             const res = await axios.post(url, {
-                contents: [{ parts: [{ text: prompt }] }],
+                systemInstruction: systemInstruction,
+                contents: contents,
                 generationConfig: {
-                    temperature: 0.85,
-                    maxOutputTokens: isLong ? 1200 : 150,
+                    temperature: 0.95,
+                    maxOutputTokens: isLong ? 1200 : 250,
                     topP: 0.95,
                     topK: 40
                 },
@@ -371,7 +183,7 @@ async function callGemini(prompt, isLong = false) {
             });
             const reply = res.data?.candidates?.[0]?.content?.parts?.[0]?.text;
             if (reply) {
-                console.log(`[AI] Model: ${model} | Long: ${isLong}`);
+                console.log(`[AI] ${model} replied (${contents.length} msgs in context)`);
                 return reply;
             }
         } catch (err) {
@@ -382,12 +194,28 @@ async function callGemini(prompt, isLong = false) {
 }
 
 // ===================================================================
-//                   MESSAGE HANDLERS
+//                   MESSAGE HANDLER (CORE LOGIC)
 // ===================================================================
 async function handleTextMessage(msg, from, text) {
-    const contact = getContactInfo(from);
-    addToHistory(from, 'user', text);
+    const userId = storage.extractUserId(from);
+    console.log(`[RECV] User: ${userId} | Msg: ${text.substring(0, 60)}`);
 
+    // Step 1: Load user's history
+    const user = storage.loadUser(userId, from);
+    console.log(`[HISTORY] ${userId} has ${user.history.length} past messages`);
+
+    // Step 2: Append user's new message to history
+    storage.appendMessage(user, 'user', text);
+
+    // Step 3: Build contents array for API
+    //     - Take last N messages for context window
+    const recentHistory = user.history.slice(-CONFIG.BEHAVIOR.MAX_HISTORY_CONTEXT);
+    const contents = recentHistory.map(m => ({
+        role: m.role === 'user' ? 'user' : 'model',
+        parts: [{ text: m.text }]
+    }));
+
+    // Step 4: Typing indicator + human delay
     if (CONFIG.BEHAVIOR.TYPING_BEFORE_REPLY) {
         try { await sock.sendPresenceUpdate('composing', from); } catch (e) {}
     }
@@ -398,69 +226,87 @@ async function handleTextMessage(msg, from, text) {
         : randomInt(CONFIG.BEHAVIOR.LONG_MSG_DELAY_MIN, CONFIG.BEHAVIOR.LONG_MSG_DELAY_MAX);
     await sleep(delay);
 
-    let conv = '';
-    for (const h of contact.history) {
-        conv += (h.role === 'user' ? 'Friend: ' : `${PROFILE.owner.name}: `) + h.text + '\n';
-    }
-
-    const fullPrompt = buildSystemPrompt(contact) +
-        '\n\n=== RECENT CHAT (for context) ===\n' + conv +
-        `\n=== NOW REPLY AS ${PROFILE.owner.name} (${detailed ? 'DETAILED, like ChatGPT' : 'short & casual, like a friend'}) ===`;
-
-    let aiReply = await callGemini(fullPrompt, detailed);
+    // Step 5: Call Gemini with system instruction + user-specific history
+    let aiReply = await callGeminiWithHistory(contents, detailed);
 
     if (!aiReply) {
-        aiReply = randomFrom([
-            'hmm, phir se bata na',
-            'kya? samjha nahi',
-            'acha, aur bata'
-        ]);
+        aiReply = "hmm, network issue lag raha hai. phir se bhej do?";
     }
+
+    // Step 6: Clean reply
+    aiReply = aiReply.trim()
+        .replace(new RegExp('^' + PROFILE.owner.name + ':\\s*', 'i'), '')
+        .replace(/^["']|["']$/g, '')
+        .replace(/^(Friend|You|User|Model):\s*/i, '');
+
+    // Step 7: Stop typing, send reply
+    try { await sock.sendPresenceUpdate('paused', from); } catch (e) {}
+
+    await sock.sendMessage(from, { text: aiReply });
+
+    // Step 8: Append AI reply to user's history
+    storage.appendMessage(user, 'model', aiReply);
+
+    // Step 9: Save user's history to file
+    storage.saveUser(user);
+
+    messageStats.sent++;
+    console.log(`[SENT] ${userId}: ${aiReply.substring(0, 60)}`);
+    console.log(`[SAVED] ${userId} history now has ${user.history.length} messages`);
+}
+
+// ===================================================================
+//                    MEDIA HANDLER
+// ===================================================================
+async function handleMediaMessage(msg, from) {
+    const m = msg.message;
+    let mediaType = null;
+    let mediaDesc = '';
+
+    if (m.imageMessage) { mediaType = 'image'; mediaDesc = `Friend sent a photo. Caption: "${m.imageMessage.caption || '(none)'}"`; }
+    else if (m.audioMessage) { mediaType = 'voice'; mediaDesc = `Friend sent a voice note (${m.audioMessage.seconds || '?'}s)`; }
+    else if (m.documentMessage) { mediaType = 'document'; mediaDesc = `Friend sent document: "${m.documentMessage.fileName || 'file'}"`; }
+    else if (m.videoMessage) { mediaType = 'video'; mediaDesc = `Friend sent a video. Caption: "${m.videoMessage.caption || '(none)'}"`; }
+    else if (m.stickerMessage) { mediaType = 'sticker'; mediaDesc = `Friend sent a sticker`; }
+
+    if (!mediaType) return;
+
+    const userId = storage.extractUserId(from);
+    console.log(`[MEDIA] ${mediaType} from ${userId}`);
+
+    const user = storage.loadUser(userId, from);
+    storage.appendMessage(user, 'user', `[${mediaType}]`);
+
+    try { await sock.sendPresenceUpdate('composing', from); } catch (e) {}
+    await sleep(randomInt(3000, 7000));
+
+    // Add context to history temporarily for AI
+    const recentHistory = user.history.slice(-CONFIG.BEHAVIOR.MAX_HISTORY_CONTEXT);
+    const contents = recentHistory.map(m => ({
+        role: m.role === 'user' ? 'user' : 'model',
+        parts: [{ text: m.text }]
+    }));
+
+    // Add the media situation as an instruction to AI
+    contents.push({
+        role: 'user',
+        parts: [{ text: `[SYSTEM: ${mediaDesc}. You cannot see/hear it, but reply naturally like a friend. Be spontaneous, not templated.]` }]
+    });
+
+    let aiReply = await callGeminiWithHistory(contents, false);
+
+    if (!aiReply) aiReply = "hmm, ye dekh nahi pa raha abhi. bata kya hai?";
 
     aiReply = aiReply.trim()
         .replace(new RegExp('^' + PROFILE.owner.name + ':\\s*', 'i'), '')
         .replace(/^["']|["']$/g, '')
-        .replace(/^(Friend|You):\s*/i, '');
-
-    if (/busy hoon.*baad mein|baad mein baat karte|baad me reply/i.test(aiReply) && text.length > 20) {
-        aiReply = randomFrom(['hmm acha', 'ok samjha', 'theek hai yaar']);
-    }
+        .replace(/^(Friend|You|User|Model):\s*/i, '');
 
     try { await sock.sendPresenceUpdate('paused', from); } catch (e) {}
-
     await sock.sendMessage(from, { text: aiReply });
-    addToHistory(from, 'assistant', aiReply);
-    messageStats.sent++;
-    console.log(`[SENT] ${from}: ${aiReply.substring(0, 80)}...`);
 
-    if (Math.random() < CONFIG.BEHAVIOR.REACT_CHANCE) {
-        try {
-            await sleep(randomInt(500, 2000));
-            await sock.sendMessage(from, {
-                react: { text: randomFrom(CONFIG.REACTIONS), key: msg.key }
-            });
-        } catch (e) {}
-    }
-}
-
-async function handleMediaMessage(msg, from) {
-    const m = msg.message;
-    let replies = null, type = null;
-    if (m.imageMessage) { type = 'image'; replies = CONFIG.MEDIA_REPLIES.IMAGE; }
-    else if (m.audioMessage) { type = 'voice'; replies = CONFIG.MEDIA_REPLIES.VOICE; }
-    else if (m.documentMessage) { type = 'document'; replies = CONFIG.MEDIA_REPLIES.DOCUMENT; }
-    else if (m.videoMessage) { type = 'video'; replies = CONFIG.MEDIA_REPLIES.VIDEO; }
-    else if (m.stickerMessage) { type = 'sticker'; replies = CONFIG.MEDIA_REPLIES.STICKER; }
-    if (!replies) return;
-
-    console.log(`[MEDIA] ${type} from ${from}`);
-    try { await sock.sendPresenceUpdate('composing', from); } catch (e) {}
-    await sleep(randomInt(2500, 6000));
-    const reply = randomFrom(replies);
-    try { await sock.sendPresenceUpdate('paused', from); } catch (e) {}
-    await sock.sendMessage(from, { text: reply });
-    addToHistory(from, 'user', `[${type}]`);
-    addToHistory(from, 'assistant', reply);
+    storage.appendMessage(user, 'model', aiReply);
+    storage.saveUser(user);
     messageStats.sent++;
 }
 
@@ -471,27 +317,46 @@ async function handleOwnerCommand(msg, from, text) {
     const cmd = text.toLowerCase().trim();
     const reply = async (t) => sock.sendMessage(from, { text: t }, { quoted: msg });
 
-    if (cmd === '!pause') { isBotPaused = true; await reply('⏸️ Paused'); return true; }
-    if (cmd === '!resume') { isBotPaused = false; await reply('▶️ Resumed'); return true; }
+    if (cmd === '!pause') { isBotPaused = true; await reply('⏸️ Paused, Sir.'); return true; }
+    if (cmd === '!resume') { isBotPaused = false; await reply('▶️ Resumed, Sir.'); return true; }
+    if (cmd === '!ping') { await reply('🏓 At your service, Sir.'); return true; }
+
     if (cmd === '!stats') {
         const up = Math.floor((Date.now() - messageStats.startTime) / 60000);
-        await reply(`📊 Sent:${messageStats.sent} Recv:${messageStats.received}\nContacts:${Object.keys(memory.contacts).length}\nUptime:${up}m`);
+        const s = storage.getStats();
+        await reply(`📊 *System Status*\n\nSent: ${messageStats.sent}\nReceived: ${messageStats.received}\n\n*Storage:*\nTotal Users: ${s.totalUsers}\nActive (7d): ${s.activeUsers}\nTotal Msgs: ${s.totalMessages}\n\nUptime: ${up} min\n\nAll systems operational, Sir.`);
         return true;
     }
-    if (cmd === '!ping') { await reply('🏓 Pong'); return true; }
-    if (cmd.startsWith('!close ')) {
-        const id = cmd.substring(7).trim().replace(/\D/g, '');
-        if (memory.contacts[id]) {
-            memory.contacts[id].closeness = 'close'; saveMemory();
-            await reply(`✅ ${id} = close`);
-        } else await reply(`❌ not found`);
+
+    if (cmd === '!backup') {
+        storage.backupAll();
+        await reply('💾 Backup created, Sir.');
         return true;
     }
-    if (cmd.startsWith('!note ')) {
-        getContactInfo(from).note = text.substring(6).trim();
-        saveMemory(); await reply('📝 Saved');
+
+    if (cmd === '!cleanup') {
+        const n = storage.cleanupOldUsers();
+        await reply(`🧹 Cleaned ${n} inactive users, Sir.`);
         return true;
     }
+
+    if (cmd.startsWith('!history ')) {
+        const targetId = cmd.substring(9).trim().replace(/\D/g, '');
+        const u = storage.loadUser(targetId);
+        const lines = u.history.slice(-5).map(h => `[${h.role}] ${h.text.substring(0, 50)}`).join('\n');
+        await reply(`📜 *Last 5 msgs of ${targetId}:*\n\n${lines || '(no history)'}`);
+        return true;
+    }
+
+    if (cmd.startsWith('!clear ')) {
+        const targetId = cmd.substring(7).trim().replace(/\D/g, '');
+        const u = storage.loadUser(targetId);
+        u.history = [];
+        storage.saveUser(u);
+        await reply(`🗑️ History cleared for ${targetId}`);
+        return true;
+    }
+
     return false;
 }
 
@@ -522,15 +387,17 @@ async function handleIncomingMessage(msg) {
         }
 
         if (isBotPaused) return;
-        if (!checkRateLimit(from)) { messageStats.skipped++; return; }
 
-        if (!text && (m.imageMessage || m.audioMessage || m.documentMessage || m.videoMessage || m.stickerMessage)) {
-            await handleMediaMessage(msg, from);
+        if (m.imageMessage || m.audioMessage || m.documentMessage || m.videoMessage || m.stickerMessage) {
+            if (text && text.trim()) {
+                await handleTextMessage(msg, from, text);
+            } else {
+                await handleMediaMessage(msg, from);
+            }
             return;
         }
 
         if (text) {
-            console.log(`[RECV] ${from}: ${text}`);
             await handleTextMessage(msg, from, text);
         }
     } catch (error) {
@@ -547,26 +414,30 @@ const app = express();
 app.get('/', async (req, res) => {
     const status = isBotPaused ? 'PAUSED' : (currentQR ? 'WAITING QR' : 'ACTIVE');
     const up = Math.floor((Date.now() - messageStats.startTime) / 60000);
+    const s = storage.getStats();
 
     if (currentQR) {
         try {
             const qrImage = await QRCode.toDataURL(currentQR, { width: 400, margin: 2 });
-            res.send(`<html><head><title>QR</title></head>
+            res.send(`<html><head><title>JARVIS QR</title></head>
                 <body style="text-align:center;font-family:Arial;padding:20px;background:#0f0f0f;color:#fff;">
-                <h1 style="color:#25D366;">WhatsApp Bot</h1>
+                <h1 style="color:#00BFFF;">J.A.R.V.I.S</h1>
                 <img src="${qrImage}" style="width:400px;height:400px;border:10px solid white;border-radius:10px;background:#fff;"/>
-                <p style="color:#25D366;">Auto-refresh 20s</p>
                 <script>setTimeout(()=>location.reload(),20000);</script>
                 </body></html>`);
         } catch (e) { res.send('QR error: ' + e.message); }
     } else {
-        res.send(`<html><head><title>Bot</title></head>
+        res.send(`<html><head><title>JARVIS</title></head>
             <body style="text-align:center;font-family:Arial;padding:50px;background:#0f0f0f;color:#fff;">
-            <h1 style="color:#25D366;">✅ Connected</h1>
+            <h1 style="color:#00BFFF;">J.A.R.V.I.S</h1>
+            <h2 style="color:#25D366;">✅ ${status}</h2>
             <p>Owner: <strong>${PROFILE.owner.name}</strong></p>
-            <h2 style="color:#25D366;">${status}</h2>
-            <p>Mode: 24/7 Active (Testing)</p>
-            <p>Sent: ${messageStats.sent} | Contacts: ${Object.keys(memory.contacts).length} | Up: ${up}m</p>
+            <hr style="border-color:#333;margin:20px auto;width:400px;">
+            <h3>📊 Multi-User Storage</h3>
+            <p>Total Users: <strong>${s.totalUsers}</strong></p>
+            <p>Active (7d): <strong>${s.activeUsers}</strong></p>
+            <p>Total Messages: <strong>${s.totalMessages}</strong></p>
+            <p>Sent: ${messageStats.sent} | Uptime: ${up}m</p>
             <script>setTimeout(()=>location.reload(),15000);</script>
             </body></html>`);
     }
@@ -574,8 +445,8 @@ app.get('/', async (req, res) => {
 
 app.listen(CONFIG.PORT, () => {
     console.log(`[SERVER] Port ${CONFIG.PORT}`);
-    console.log(`[BOT] Owner: ${PROFILE.owner.name}`);
-    console.log(`[MODE] 24/7 Active (Testing)`);
+    console.log(`[JARVIS] Owner: ${PROFILE.owner.name}`);
+    console.log(`[MODE] 24/7 | Multi-User Context`);
 });
 
 // ===================================================================
@@ -603,7 +474,6 @@ async function connectToWhatsApp() {
                 currentQR = null;
                 const code = (lastDisconnect.error instanceof Boom) ? lastDisconnect.error.output?.statusCode : 0;
                 const shouldReconnect = code !== DisconnectReason.loggedOut;
-                console.log(`[CONN] Closed (${code}). Reconnect: ${shouldReconnect}`);
                 if (shouldReconnect) {
                     reconnectAttempts++;
                     setTimeout(connectToWhatsApp, Math.min(5000 * reconnectAttempts, 60000));
@@ -612,6 +482,9 @@ async function connectToWhatsApp() {
                 currentQR = null;
                 reconnectAttempts = 0;
                 console.log('[CONN] ✅ CONNECTED SUCCESSFULLY!');
+                console.log('[JARVIS] Multi-user mode active, Sir.');
+                // Startup backup
+                if (storage.CONFIG.BACKUP_ON_START) storage.backupAll();
             }
         });
 
@@ -631,11 +504,23 @@ async function connectToWhatsApp() {
 //                    START
 // ===================================================================
 console.log('═══════════════════════════════════════════');
-console.log('  PERSONAL AI ASSISTANT v7.1');
+console.log('  J.A.R.V.I.S v10.0 - Multi-User Edition');
 console.log(`  Owner: ${PROFILE.owner.name}`);
-console.log('  Mode: 24/7 Active (Testing)');
+console.log(`  Max history/user: ${storage.CONFIG.MAX_HISTORY_PER_USER}`);
+console.log(`  Cleanup after: ${storage.CONFIG.CLEANUP_DAYS} days`);
 console.log('═══════════════════════════════════════════');
 connectToWhatsApp();
 
-process.on('SIGINT', () => { saveMemory(); process.exit(0); });
-process.on('SIGTERM', () => { saveMemory(); process.exit(0); });
+// Auto-cleanup daily
+setInterval(() => storage.cleanupOldUsers(), 24 * 60 * 60 * 1000);
+
+// Graceful shutdown
+process.on('SIGINT', () => {
+    console.log('\n[SHUTDOWN] Saving all...');
+    storage.backupAll();
+    process.exit(0);
+});
+process.on('SIGTERM', () => {
+    storage.backupAll();
+    process.exit(0);
+});
