@@ -1,6 +1,6 @@
 // ===================================================================
-//  JARVIS-STYLE AI ASSISTANT v10.3
-//  Multi-User + Latest Gemini Models (2026)
+//  JARVIS-STYLE AI ASSISTANT v11.0
+//  Dual AI: Gemini + Groq (Auto Fallback)
 //  Owner: Norang Ali Shah
 // ===================================================================
 
@@ -13,6 +13,99 @@ const fs = require('fs');
 const path = require('path');
 
 const storage = require('./storage');
+
+// ===================================================================
+//                        GITHUB AUTH BACKUP
+// ===================================================================
+const GITHUB_AUTH = {
+    TOKEN: process.env.GITHUB_AUTH_TOKEN,
+    REPO: process.env.GITHUB_AUTH_REPO,
+    FILE: 'whatsapp_auth.json',
+    BRANCH: 'main'
+};
+
+let lastBackupTime = 0;
+const BACKUP_COOLDOWN = 60000;
+
+async function restoreAuthFromGitHub() {
+    if (!GITHUB_AUTH.TOKEN || !GITHUB_AUTH.REPO) return false;
+
+    if (fs.existsSync('auth_info')) {
+        const files = fs.readdirSync('auth_info');
+        if (files.some(f => f.includes('creds'))) {
+            console.log('[AUTH] Local auth found - skipping restore');
+            return true;
+        }
+    }
+
+    try {
+        const url = `https://api.github.com/repos/${GITHUB_AUTH.REPO}/contents/${GITHUB_AUTH.FILE}`;
+        const res = await axios.get(url, {
+            headers: { Authorization: `Bearer ${GITHUB_AUTH.TOKEN}`, Accept: 'application/vnd.github.v3+json' },
+            timeout: 15000
+        });
+
+        const content = Buffer.from(res.data.content, 'base64').toString('utf-8');
+        const authData = JSON.parse(content);
+
+        fs.mkdirSync('auth_info', { recursive: true });
+        for (const [fname, fcontent] of Object.entries(authData)) {
+            fs.writeFileSync(path.join('auth_info', fname), fcontent);
+        }
+        console.log('[AUTH] ✅ Session restored from GitHub!');
+        return true;
+    } catch (err) {
+        if (err.response?.status === 404) console.log('[AUTH] No backup found - QR scan needed');
+        else console.log('[AUTH] Restore failed:', err.message);
+        return false;
+    }
+}
+
+async function backupAuthToGitHub(force = false) {
+    if (!GITHUB_AUTH.TOKEN || !GITHUB_AUTH.REPO) return;
+    if (!fs.existsSync('auth_info')) return;
+
+    const now = Date.now();
+    if (!force && (now - lastBackupTime) < BACKUP_COOLDOWN) return;
+    lastBackupTime = now;
+
+    try {
+        const authData = {};
+        const files = fs.readdirSync('auth_info');
+        for (const file of files) {
+            const fpath = path.join('auth_info', file);
+            if (fs.statSync(fpath).isFile()) {
+                authData[file] = fs.readFileSync(fpath, 'utf-8');
+            }
+        }
+
+        const content = Buffer.from(JSON.stringify(authData)).toString('base64');
+        const url = `https://api.github.com/repos/${GITHUB_AUTH.REPO}/contents/${GITHUB_AUTH.FILE}`;
+
+        let sha = null;
+        try {
+            const getRes = await axios.get(url, {
+                headers: { Authorization: `Bearer ${GITHUB_AUTH.TOKEN}` },
+                timeout: 10000
+            });
+            sha = getRes.data.sha;
+        } catch (e) {}
+
+        await axios.put(url, {
+            message: `auth backup ${new Date().toISOString()}`,
+            content,
+            sha: sha || undefined,
+            branch: GITHUB_AUTH.BRANCH
+        }, {
+            headers: { Authorization: `Bearer ${GITHUB_AUTH.TOKEN}`, Accept: 'application/vnd.github.v3+json' },
+            timeout: 15000
+        });
+
+        console.log('[AUTH] ✅ Backed up to GitHub');
+    } catch (err) {
+        console.log('[AUTH] Backup failed:', err.message);
+    }
+}
 
 // ===================================================================
 //                        LOAD PROFILE
@@ -45,6 +138,7 @@ try {
 // ===================================================================
 const CONFIG = {
     GEMINI_KEY: process.env.GEMINI_KEY,
+    GROQ_KEY: process.env.GROQ_API_KEY,
     PORT: process.env.PORT || 3000,
 
     BEHAVIOR: {
@@ -54,20 +148,22 @@ const CONFIG = {
         LONG_MSG_DELAY_MAX: 12000,
         TYPING_BEFORE_REPLY: true,
         SEND_READ_RECEIPT: true,
-        MAX_HISTORY_CONTEXT: 20,
-        RATE_LIMIT_PER_MINUTE: 30
+        MAX_HISTORY_CONTEXT: 20
     },
 
-    // Latest Gemini models (2026)
-    // "gemini-flash-latest" = Google ka auto-updating alias (always works)
-    MODELS: [
-        'gemini-flash-latest',
+    // Gemini models
+    GEMINI_MODELS: [
         'gemini-3.6-flash',
-        'gemini-3.6-pro'
+        'gemini-flash-latest'
     ],
+    GEMINI_VERSIONS: ['v1beta'],
 
-    // API version fallback
-    API_VERSIONS: ['v1beta', 'v1']
+    // Groq models (fallback)
+    GROQ_MODELS: [
+        'llama-3.3-70b-versatile',
+        'llama-3.1-70b-versatile',
+        'mixtral-8x7b-32768'
+    ]
 };
 
 // ===================================================================
@@ -79,6 +175,7 @@ let isBotPaused = false;
 let reconnectAttempts = 0;
 const messageStats = {
     sent: 0, received: 0, failed: 0, skipped: 0,
+    geminiUsed: 0, groqUsed: 0,
     startTime: Date.now()
 };
 
@@ -91,7 +188,7 @@ function getSystemPrompt() {
 
 IMPORTANT CONTEXT:
 You are running on ${o.name}'s WhatsApp. So:
-- If sender is ${o.name} himself → talk to him like JARVIS talks to Tony: "Sir", professional but warm, witty.
+- If sender is ${o.name} himself → talk like JARVIS talks to Tony: "Sir", professional but warm, witty.
 - If sender is a FRIEND → be a smart helpful assistant on his behalf. NEVER reveal you're AI.
 - NEVER say "I am an AI / bot / assistant" - just BE smart.
 
@@ -111,18 +208,18 @@ Interests: ${(o.interests || []).join(', ')}
 - Use WhatsApp formatting: *bold*, _italic_, bullets (•)
 
 ===== HOW TO REPLY =====
-1. GREETING ONLY (hi, salam, hello) → Short reply (1-2 lines)
-2. CASUAL CHAT (kya haal, kya kar rahe) → Natural 2-4 lines, ask back something
-3. REAL QUESTION (explain X, kya hai, how to, capital kya hai) → Detailed 5-12 lines with *headings*, • bullets
-4. JOKE/FUNNY → Reply with humor, 2-3 lines
+1. GREETING (hi, salam) → Short reply (1-2 lines)
+2. CASUAL (kya haal, kya kar rahe) → Natural 2-4 lines, ask back something
+3. REAL QUESTION (explain X, kya hai, how to, capital) → Detailed 5-12 lines with *headings*, • bullets
+4. JOKE → Reply with humor, 2-3 lines
 5. EMOTIONAL → Empathetic, 2-4 lines
 6. MEDIA → Natural spontaneous reply
 
-===== LANGUAGE RULES (VERY IMPORTANT) =====
-- If user writes in ENGLISH → reply in ENGLISH
-- If user writes in ROMAN URDU → reply in ROMAN URDU
-- If MIXED → reply in MIXED
-- NEVER force Urdu if user is writing English
+===== LANGUAGE RULES =====
+- ENGLISH in → ENGLISH out
+- ROMAN URDU in → ROMAN URDU out
+- MIXED in → MIXED out
+- NEVER force Urdu if user writes English
 
 ===== REPLY LENGTH =====
 - Never reply with just "hmm" or "ok"
@@ -170,15 +267,15 @@ function needsDetailedAnswer(text) {
 }
 
 // ===================================================================
-//               AI CALL (with API version fallback)
+//               AI CALL - GEMINI
 // ===================================================================
-async function callGeminiWithHistory(contents, isLong = false) {
-    const systemInstruction = {
-        parts: [{ text: getSystemPrompt() }]
-    };
+async function callGemini(contents, isLong = false) {
+    if (!CONFIG.GEMINI_KEY) return null;
 
-    for (const version of CONFIG.API_VERSIONS) {
-        for (const model of CONFIG.MODELS) {
+    const systemInstruction = { parts: [{ text: getSystemPrompt() }] };
+
+    for (const version of CONFIG.GEMINI_VERSIONS) {
+        for (const model of CONFIG.GEMINI_MODELS) {
             try {
                 const url = `https://generativelanguage.googleapis.com/${version}/models/${model}:generateContent?key=${CONFIG.GEMINI_KEY}`;
                 const res = await axios.post(url, {
@@ -199,15 +296,83 @@ async function callGeminiWithHistory(contents, isLong = false) {
                 }, { timeout: 30000 });
                 const reply = res.data?.candidates?.[0]?.content?.parts?.[0]?.text;
                 if (reply) {
-                    console.log(`[AI] ✅ ${version}/${model} replied (${contents.length} msgs)`);
+                    console.log(`[GEMINI] ✅ ${version}/${model}`);
                     return reply;
                 }
             } catch (err) {
                 const msg = err.response?.data?.error?.message || err.message;
-                console.log(`[AI] ❌ ${version}/${model}: ${msg.substring(0, 80)}`);
+                console.log(`[GEMINI] ❌ ${version}/${model}: ${msg.substring(0, 60)}`);
             }
         }
     }
+    return null;
+}
+
+// ===================================================================
+//               AI CALL - GROQ (FALLBACK)
+// ===================================================================
+async function callGroq(contents, isLong = false) {
+    if (!CONFIG.GROQ_KEY) return null;
+
+    // Convert Gemini format to Groq/OpenAI format
+    const messages = [
+        { role: 'system', content: getSystemPrompt() }
+    ];
+
+    for (const c of contents) {
+        messages.push({
+            role: c.role === 'model' ? 'assistant' : 'user',
+            content: c.parts[0].text
+        });
+    }
+
+    for (const model of CONFIG.GROQ_MODELS) {
+        try {
+            const res = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
+                model: model,
+                messages: messages,
+                temperature: 0.9,
+                max_tokens: isLong ? 1500 : 400,
+                top_p: 0.95
+            }, {
+                headers: {
+                    'Authorization': `Bearer ${CONFIG.GROQ_KEY}`,
+                    'Content-Type': 'application/json'
+                },
+                timeout: 30000
+            });
+            const reply = res.data?.choices?.[0]?.message?.content;
+            if (reply) {
+                console.log(`[GROQ] ✅ ${model}`);
+                return reply;
+            }
+        } catch (err) {
+            const msg = err.response?.data?.error?.message || err.message;
+            console.log(`[GROQ] ❌ ${model}: ${msg.substring(0, 60)}`);
+        }
+    }
+    return null;
+}
+
+// ===================================================================
+//               AI CALL - SMART ROUTER
+// ===================================================================
+async function callAI(contents, isLong = false) {
+    // Try Gemini first
+    let reply = await callGemini(contents, isLong);
+    if (reply) {
+        messageStats.geminiUsed++;
+        return reply;
+    }
+
+    // Fallback to Groq
+    console.log('[AI] Gemini failed, trying Groq...');
+    reply = await callGroq(contents, isLong);
+    if (reply) {
+        messageStats.groqUsed++;
+        return reply;
+    }
+
     return null;
 }
 
@@ -239,7 +404,7 @@ async function handleTextMessage(msg, from, text) {
         : randomInt(CONFIG.BEHAVIOR.LONG_MSG_DELAY_MIN, CONFIG.BEHAVIOR.LONG_MSG_DELAY_MAX);
     await sleep(delay);
 
-    let aiReply = await callGeminiWithHistory(contents, detailed);
+    let aiReply = await callAI(contents, detailed);
 
     if (!aiReply) {
         const fallbacks = [
@@ -253,7 +418,7 @@ async function handleTextMessage(msg, from, text) {
     aiReply = aiReply.trim()
         .replace(new RegExp('^' + PROFILE.owner.name + ':\\s*', 'i'), '')
         .replace(/^["']|["']$/g, '')
-        .replace(/^(Friend|You|User|Model):\s*/i, '');
+        .replace(/^(Friend|You|User|Model|Assistant):\s*/i, '');
 
     try { await sock.sendPresenceUpdate('paused', from); } catch (e) {}
     await sock.sendMessage(from, { text: aiReply });
@@ -297,16 +462,16 @@ async function handleMediaMessage(msg, from) {
 
     contents.push({
         role: 'user',
-        parts: [{ text: `[SYSTEM: ${mediaDesc}. Reply naturally like a friend in 2-4 lines. Be spontaneous.]` }]
+        parts: [{ text: `[SYSTEM: ${mediaDesc}. Reply naturally in 2-4 lines. Be spontaneous.]` }]
     });
 
-    let aiReply = await callGeminiWithHistory(contents, false);
+    let aiReply = await callAI(contents, false);
     if (!aiReply) aiReply = "hmm, ye dekh nahi pa raha abhi. bata kya hai?";
 
     aiReply = aiReply.trim()
         .replace(new RegExp('^' + PROFILE.owner.name + ':\\s*', 'i'), '')
         .replace(/^["']|["']$/g, '')
-        .replace(/^(Friend|You|User|Model):\s*/i, '');
+        .replace(/^(Friend|You|User|Model|Assistant):\s*/i, '');
 
     try { await sock.sendPresenceUpdate('paused', from); } catch (e) {}
     await sock.sendMessage(from, { text: aiReply });
@@ -326,13 +491,13 @@ async function handleOwnerCommand(msg, from, text) {
     if (cmd === '!pause') { isBotPaused = true; await reply('⏸️ Paused, Sir.'); return true; }
     if (cmd === '!resume') { isBotPaused = false; await reply('▶️ Resumed, Sir.'); return true; }
     if (cmd === '!ping') { await reply('🏓 At your service, Sir.'); return true; }
+    if (cmd === '!backup') { await backupAuthToGitHub(true); await reply('💾 Auth backed up, Sir.'); return true; }
     if (cmd === '!stats') {
         const up = Math.floor((Date.now() - messageStats.startTime) / 60000);
         const s = storage.getStats();
-        await reply(`📊 *Status*\n\nSent: ${messageStats.sent}\nUsers: ${s.totalUsers}\nMsgs: ${s.totalMessages}\nUptime: ${up} min`);
+        await reply(`📊 *Status*\n\nSent: ${messageStats.sent}\nUsers: ${s.totalUsers}\nMsgs: ${s.totalMessages}\nUptime: ${up} min\n\n*AI Usage:*\nGemini: ${messageStats.geminiUsed}\nGroq: ${messageStats.groqUsed}\n\nAuth: ${GITHUB_AUTH.REPO ? '✅' : '❌'}`);
         return true;
     }
-    if (cmd === '!backup') { storage.backupAll(); await reply('💾 Backup done, Sir.'); return true; }
     if (cmd === '!cleanup') { const n = storage.cleanupOldUsers(); await reply(`🧹 Cleaned ${n}, Sir.`); return true; }
     if (cmd.startsWith('!history ')) {
         const targetId = cmd.substring(9).trim().replace(/\D/g, '');
@@ -419,7 +584,8 @@ app.get('/', async (req, res) => {
             <h1 style="color:#00BFFF;">J.A.R.V.I.S</h1>
             <h2 style="color:#25D366;">✅ ${status}</h2>
             <p>Owner: ${PROFILE.owner.name}</p>
-            <p>Users: ${s.totalUsers} | Msgs: ${s.totalMessages} | Sent: ${messageStats.sent}</p>
+            <p>Users: ${s.totalUsers} | Msgs: ${s.totalMessages}</p>
+            <p>Sent: ${messageStats.sent} | Gemini: ${messageStats.geminiUsed} | Groq: ${messageStats.groqUsed}</p>
             <p>Uptime: ${up}m</p>
             <script>setTimeout(()=>location.reload(),15000);</script>
             </body></html>`);
@@ -429,8 +595,7 @@ app.get('/', async (req, res) => {
 app.listen(CONFIG.PORT, () => {
     console.log(`[SERVER] Port ${CONFIG.PORT}`);
     console.log(`[JARVIS] Owner: ${PROFILE.owner.name}`);
-    console.log(`[MODELS] ${CONFIG.MODELS.join(', ')}`);
-    console.log(`[API] Versions: ${CONFIG.API_VERSIONS.join(', ')}`);
+    console.log(`[AI] Gemini: ${CONFIG.GEMINI_KEY ? 'Yes' : 'No'} | Groq: ${CONFIG.GROQ_KEY ? 'Yes' : 'No'}`);
 });
 
 // ===================================================================
@@ -438,6 +603,8 @@ app.listen(CONFIG.PORT, () => {
 // ===================================================================
 async function connectToWhatsApp() {
     try {
+        await restoreAuthFromGitHub();
+
         const { state, saveCreds } = await useMultiFileAuthState('auth_info');
         sock = makeWASocket({
             auth: state,
@@ -446,7 +613,10 @@ async function connectToWhatsApp() {
             browser: ['Ubuntu', 'Chrome', '22.04.4']
         });
 
-        sock.ev.on('creds.update', saveCreds);
+        sock.ev.on('creds.update', async () => {
+            saveCreds();
+            backupAuthToGitHub().catch(() => {});
+        });
 
         sock.ev.on('connection.update', (update) => {
             const { connection, lastDisconnect, qr } = update;
@@ -466,6 +636,7 @@ async function connectToWhatsApp() {
                 currentQR = null;
                 reconnectAttempts = 0;
                 console.log('[CONN] ✅ CONNECTED SUCCESSFULLY!');
+                backupAuthToGitHub(true).catch(() => {});
                 if (storage.CONFIG.BACKUP_ON_START) storage.backupAll();
             }
         });
@@ -486,14 +657,15 @@ async function connectToWhatsApp() {
 //                    START
 // ===================================================================
 console.log('═══════════════════════════════════════════');
-console.log('  J.A.R.V.I.S v10.3');
+console.log('  J.A.R.V.I.S v11.0 - Dual AI');
 console.log(`  Owner: ${PROFILE.owner.name}`);
-console.log(`  Models: ${CONFIG.MODELS.join(', ')}`);
-console.log(`  API: ${CONFIG.API_VERSIONS.join(', ')}`);
+console.log(`  Gemini: ${CONFIG.GEMINI_KEY ? 'Enabled' : 'Disabled'}`);
+console.log(`  Groq: ${CONFIG.GROQ_KEY ? 'Enabled' : 'Disabled'}`);
 console.log('═══════════════════════════════════════════');
 connectToWhatsApp();
 
+setInterval(() => backupAuthToGitHub().catch(() => {}), 10 * 60 * 1000);
 setInterval(() => storage.cleanupOldUsers(), 24 * 60 * 60 * 1000);
 
-process.on('SIGINT', () => { storage.backupAll(); process.exit(0); });
-process.on('SIGTERM', () => { storage.backupAll(); process.exit(0); });
+process.on('SIGINT', async () => { await backupAuthToGitHub(true).catch(() => {}); storage.backupAll(); process.exit(0); });
+process.on('SIGTERM', async () => { await backupAuthToGitHub(true).catch(() => {}); storage.backupAll(); process.exit(0); });
