@@ -1,7 +1,6 @@
 // ===================================================================
-//  NORANG ALI SHAH - PERSONAL AI ASSISTANT v7.0
-//  ChatGPT-Style Detailed Answers + Human WhatsApp Tone
-//  Active: 11 PM - 9 AM
+//  NORANG ALI SHAH - PERSONAL AI ASSISTANT v7.1
+//  Testing Mode - 24/7 Active (No Quiet Hours)
 // ===================================================================
 
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
@@ -56,11 +55,6 @@ const CONFIG = {
         SEND_READ_RECEIPT: true,
         REACT_CHANCE: 0.1,
         MAX_HISTORY_PER_CONTACT: 30,
-
-        // Active: 11 PM - 9 AM (raat)
-        QUIET_HOURS_ENABLED: true,
-        QUIET_HOURS_START: 9,
-        QUIET_HOURS_END: 23,
 
         RATE_LIMIT_PER_MINUTE: 30
     },
@@ -140,7 +134,7 @@ Interests: ${(o.interests || []).join(', ')}`;
 }
 
 // ===================================================================
-//                    SYSTEM PROMPT (MAIN BRAIN)
+//                    SYSTEM PROMPT
 // ===================================================================
 function buildSystemPrompt(contactInfo = {}) {
     const o = PROFILE.owner;
@@ -154,23 +148,23 @@ ${profileInfo}${contactNote}
 
 ===== CRITICAL RULE: HOW TO REPLY =====
 
-🎯 **TWO TYPES OF MESSAGES - DETECT AND HANDLE DIFFERENTLY:**
+TWO TYPES OF MESSAGES - DETECT AND HANDLE DIFFERENTLY:
 
-**TYPE 1: CASUAL CHAT** (short greeting, casual talk)
+TYPE 1: CASUAL CHAT (short greeting, casual talk)
 Examples: "hi", "salam", "kya haal", "kya kar raha hai?", "chai pe chalein?", "kahan ho?", "good morning"
-→ Reply SHORT and casual. 1-3 lines. Like a real friend.
-→ Examples:
-  - "salam" → "salam, kaisa hai"
-  - "kya kar raha hai?" → "kuch nahi yaar, free hoon. tu bata"
-  - "chai pe chalein?" → "haan chalo" / "nahi yaar abhi kaam hai"
-  - "kahan ho?" → "ghar pe hoon yaar"
+- Reply SHORT and casual. 1-3 lines. Like a real friend.
+- Examples:
+  - "salam" -> "salam, kaisa hai"
+  - "kya kar raha hai?" -> "kuch nahi yaar, free hoon. tu bata"
+  - "chai pe chalein?" -> "haan chalo" / "nahi yaar abhi kaam hai"
+  - "kahan ho?" -> "ghar pe hoon yaar"
 
-**TYPE 2: REAL QUESTIONS** (needs proper answer)
+TYPE 2: REAL QUESTIONS (needs proper answer)
 Examples: "explain OOP", "Pakistan ka capital kya hai?", "how to code in Python?", "kya hota hai X?", "difference between A and B", "assignment likh do", "kaise karun Y?", any academic/knowledge/technical question
-→ Reply PROPERLY and DETAILED. Like ChatGPT gives.
-→ Use headings, bullet points, examples, steps.
-→ 5-15 lines depending on complexity.
-→ Structure:
+- Reply PROPERLY and DETAILED. Like ChatGPT gives.
+- Use headings, bullet points, examples, steps.
+- 5-15 lines depending on complexity.
+- Structure:
   - Pehle short definition/intro
   - Phir main points (bullet form)
   - Phir example (agar ho)
@@ -212,19 +206,19 @@ Code reuse hota hai, maintain karna easy hai, aur real world ko copy karta hai."
 
 ===== EXAMPLES =====
 
-Causal reply:
+Casual:
 Friend: "salam"
 You: "salam, kaisa hai"
 
-Casual reply:
+Casual:
 Friend: "kya kar raha hai?"
 You: "kuch nahi yaar, free hoon. tu bata"
 
-Casual reply:
+Casual:
 Friend: "chai pe chalein?"
 You: "haan chalo, kab?"
 
-Detailed reply (academic):
+Detailed (academic):
 Friend: "explain OOP"
 You: "*OOP (Object Oriented Programming)*
 Ye ek programming style hai jisme hum code ko objects ki tarah likhte hain.
@@ -243,11 +237,11 @@ Honda = new Car("red", 120)
 *Kyun use karein?*
 Bara code organize ho jata hai, reuse hota hai, aur samajhna easy hai."
 
-Detailed reply (general knowledge):
+Detailed (general knowledge):
 Friend: "Pakistan ka capital kya hai?"
 You: "Islamabad. 1960s me Karachi se shift hua tha."
 
-Detailed reply (coding help):
+Detailed (coding help):
 Friend: "Python me loop kaise likhun?"
 You: "*Python loop:*
 
@@ -283,14 +277,14 @@ You: "haha nahi yaar, main ${o.name} hoon. kya lagta hai? 😄"
 
 ===== PRIVACY =====
 - NEVER share: DOB, father's name, village, siblings, religion, address
-- If asked → "yaad nahi yaar" or "baad me bataunga"
+- If asked -> "yaad nahi yaar" or "baad me bataunga"
 - Share only: name, age, city, profession, general interests
 - For close friends: can share university
 
 ===== FINAL REMINDER =====
 You are ${o.name}, a real person. 
-- Casual talk → short human reply.
-- Real question → proper detailed answer like ChatGPT.
+- Casual talk -> short human reply.
+- Real question -> proper detailed answer like ChatGPT.
 - NEVER reveal you're an AI.
 - Match the friend's energy.`;
 }
@@ -301,15 +295,6 @@ You are ${o.name}, a real person.
 function randomInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function randomFrom(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
-
-function isQuietHours() {
-    if (!CONFIG.BEHAVIOR.QUIET_HOURS_ENABLED) return false;
-    const hour = new Date().getHours();
-    const s = CONFIG.BEHAVIOR.QUIET_HOURS_START;
-    const e = CONFIG.BEHAVIOR.QUIET_HOURS_END;
-    if (s < e) return hour >= s && hour < e;
-    return hour >= s || hour < e;
-}
 
 function getContactId(jid) { return jid.split('@')[0].split(':')[0]; }
 
@@ -343,7 +328,6 @@ function isShortMessage(text) {
 
 function needsDetailedAnswer(text) {
     const t = text.toLowerCase();
-    // Detailed answer triggers
     const detailedKeywords = /\b(explain|samjha|samjao|kya hai|kya hota|how|kaise|why|kyun|difference|define|write|likh|bana|code|assignment|report|essay|paragraph|definition|tafseel|detail|example|misal|steps|tareeqa|tarika|help|madad|sikha|sikhao|batao|answer|jawab|question|sawal|kya matlab|meaning)\b/i;
     const hasQuestionMark = t.includes('?');
     const isLong = text.length > 50;
@@ -433,13 +417,11 @@ async function handleTextMessage(msg, from, text) {
         ]);
     }
 
-    // Clean reply
     aiReply = aiReply.trim()
         .replace(new RegExp('^' + PROFILE.owner.name + ':\\s*', 'i'), '')
         .replace(/^["']|["']$/g, '')
         .replace(/^(Friend|You):\s*/i, '');
 
-    // Safety filter
     if (/busy hoon.*baad mein|baad mein baat karte|baad me reply/i.test(aiReply) && text.length > 20) {
         aiReply = randomFrom(['hmm acha', 'ok samjha', 'theek hai yaar']);
     }
@@ -493,15 +475,10 @@ async function handleOwnerCommand(msg, from, text) {
     if (cmd === '!resume') { isBotPaused = false; await reply('▶️ Resumed'); return true; }
     if (cmd === '!stats') {
         const up = Math.floor((Date.now() - messageStats.startTime) / 60000);
-        const now = new Date().getHours();
-        await reply(`📊 Sent:${messageStats.sent} Recv:${messageStats.received}\nContacts:${Object.keys(memory.contacts).length}\nUptime:${up}m\nHour:${now} - ${isQuietHours() ? 'QUIET' : 'ACTIVE'}`);
+        await reply(`📊 Sent:${messageStats.sent} Recv:${messageStats.received}\nContacts:${Object.keys(memory.contacts).length}\nUptime:${up}m`);
         return true;
     }
     if (cmd === '!ping') { await reply('🏓 Pong'); return true; }
-    if (cmd === '!hours') {
-        await reply(`🕐 Active: 11 PM - 9 AM\nSleep: 9 AM - 11 PM\nAbhi: ${isQuietHours() ? 'QUIET 😴' : 'ACTIVE ✅'}`);
-        return true;
-    }
     if (cmd.startsWith('!close ')) {
         const id = cmd.substring(7).trim().replace(/\D/g, '');
         if (memory.contacts[id]) {
@@ -545,7 +522,6 @@ async function handleIncomingMessage(msg) {
         }
 
         if (isBotPaused) return;
-        if (isQuietHours()) { console.log('[QUIET] Sleep hours'); return; }
         if (!checkRateLimit(from)) { messageStats.skipped++; return; }
 
         if (!text && (m.imageMessage || m.audioMessage || m.documentMessage || m.videoMessage || m.stickerMessage)) {
@@ -569,9 +545,8 @@ async function handleIncomingMessage(msg) {
 const app = express();
 
 app.get('/', async (req, res) => {
-    const status = isBotPaused ? 'PAUSED' : (currentQR ? 'WAITING QR' : (isQuietHours() ? 'SLEEPING' : 'ACTIVE'));
+    const status = isBotPaused ? 'PAUSED' : (currentQR ? 'WAITING QR' : 'ACTIVE');
     const up = Math.floor((Date.now() - messageStats.startTime) / 60000);
-    const now = new Date().getHours();
 
     if (currentQR) {
         try {
@@ -585,13 +560,12 @@ app.get('/', async (req, res) => {
                 </body></html>`);
         } catch (e) { res.send('QR error: ' + e.message); }
     } else {
-        const statusColor = status.includes('ACTIVE') ? '#25D366' : (status.includes('SLEEP') ? '#FFA500' : '#FF6B6B');
         res.send(`<html><head><title>Bot</title></head>
             <body style="text-align:center;font-family:Arial;padding:50px;background:#0f0f0f;color:#fff;">
             <h1 style="color:#25D366;">✅ Connected</h1>
             <p>Owner: <strong>${PROFILE.owner.name}</strong></p>
-            <h2 style="color:${statusColor};">${status}</h2>
-            <p>Hour: ${now}:00 | Active: 11 PM - 9 AM</p>
+            <h2 style="color:#25D366;">${status}</h2>
+            <p>Mode: 24/7 Active (Testing)</p>
             <p>Sent: ${messageStats.sent} | Contacts: ${Object.keys(memory.contacts).length} | Up: ${up}m</p>
             <script>setTimeout(()=>location.reload(),15000);</script>
             </body></html>`);
@@ -601,7 +575,7 @@ app.get('/', async (req, res) => {
 app.listen(CONFIG.PORT, () => {
     console.log(`[SERVER] Port ${CONFIG.PORT}`);
     console.log(`[BOT] Owner: ${PROFILE.owner.name}`);
-    console.log(`[HOURS] Active: 11 PM - 9 AM | Sleep: 9 AM - 11 PM`);
+    console.log(`[MODE] 24/7 Active (Testing)`);
 });
 
 // ===================================================================
@@ -657,9 +631,9 @@ async function connectToWhatsApp() {
 //                    START
 // ===================================================================
 console.log('═══════════════════════════════════════════');
-console.log('  PERSONAL AI ASSISTANT v7.0');
+console.log('  PERSONAL AI ASSISTANT v7.1');
 console.log(`  Owner: ${PROFILE.owner.name}`);
-console.log('  Active: 11 PM - 9 AM | Sleep: 9 AM - 11 PM');
+console.log('  Mode: 24/7 Active (Testing)');
 console.log('═══════════════════════════════════════════');
 connectToWhatsApp();
 
