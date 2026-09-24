@@ -1,7 +1,8 @@
 // ===================================================================
-//  NORANG AI v14.0 - PERFECT HUMAN CONVERSATION
-//  Flow-aware, Natural, Full-featured
-// ===================================================================
+//  NORANG AI v17.0 - COMPLETE SINGLE-FILE WHATSAPP BOT
+//  Author: Norang Ali Shah
+//  Features: Role-based, Dual AI, Multi-user, Auth backup, Strict rules
+//  ===================================================================
 
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
@@ -11,10 +12,142 @@ const QRCode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
 
-const storage = require('./storage');
+// ===================================================================
+//              SECTION 1: STORAGE MODULE (Inline)
+// ===================================================================
+const STORAGE_CONFIG = {
+    DATA_DIR: path.join(__dirname, 'data'),
+    USERS_DIR: path.join(__dirname, 'data', 'users'),
+    BACKUP_DIR: path.join(__dirname, 'data', 'backup'),
+    MAX_HISTORY_PER_USER: 30,
+    CLEANUP_DAYS: 90,
+    BACKUP_ON_START: true
+};
+
+// Ensure folders exist
+[STORAGE_CONFIG.DATA_DIR, STORAGE_CONFIG.USERS_DIR, STORAGE_CONFIG.BACKUP_DIR].forEach(dir => {
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+});
+
+const storage = {
+    extractUserId(jid) {
+        return jid.split('@')[0].split(':')[0].replace(/\D/g, '');
+    },
+
+    getUserFilePath(userId) {
+        return path.join(STORAGE_CONFIG.USERS_DIR, `${userId}.json`);
+    },
+
+    createEmptyUser(userId, jid) {
+        return {
+            userId,
+            jid,
+            firstSeen: new Date().toISOString(),
+            lastSeen: new Date().toISOString(),
+            messageCount: 0,
+            history: [],
+            metadata: {
+                name: null,
+                note: null,
+                closeness: 'normal',
+                language: null,
+                role: 'friend'  // teacher | close_friend | low_friend | family | stranger | friend
+            }
+        };
+    },
+
+    loadUser(userId, jid = null) {
+        const filePath = this.getUserFilePath(userId);
+        try {
+            if (fs.existsSync(filePath)) {
+                const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+                if (!data.history) data.history = [];
+                if (!data.metadata) data.metadata = { closeness: 'normal', role: 'friend' };
+                if (!data.metadata.role) data.metadata.role = 'friend';
+                return data;
+            }
+        } catch (err) {
+            console.error(`[STORAGE] Error loading ${userId}:`, err.message);
+        }
+        return this.createEmptyUser(userId, jid);
+    },
+
+    saveUser(user) {
+        user.lastSeen = new Date().toISOString();
+        const filePath = this.getUserFilePath(user.userId);
+        try {
+            const tmpPath = filePath + '.tmp';
+            fs.writeFileSync(tmpPath, JSON.stringify(user, null, 2));
+            fs.renameSync(tmpPath, filePath);
+        } catch (err) {
+            console.error(`[STORAGE] Save error ${user.userId}:`, err.message);
+        }
+    },
+
+    appendMessage(user, role, text) {
+        user.history.push({ role, text, timestamp: Date.now() });
+        if (user.history.length > STORAGE_CONFIG.MAX_HISTORY_PER_USER) {
+            user.history = user.history.slice(-STORAGE_CONFIG.MAX_HISTORY_PER_USER);
+        }
+        user.messageCount = (user.messageCount || 0) + 1;
+    },
+
+    getStats() {
+        try {
+            const files = fs.readdirSync(STORAGE_CONFIG.USERS_DIR).filter(f => f.endsWith('.json'));
+            let totalMessages = 0, activeUsers = 0;
+            const now = Date.now();
+            for (const file of files) {
+                try {
+                    const data = JSON.parse(fs.readFileSync(path.join(STORAGE_CONFIG.USERS_DIR, file), 'utf8'));
+                    totalMessages += data.messageCount || 0;
+                    if (now - new Date(data.lastSeen).getTime() < 7 * 24 * 60 * 60 * 1000) activeUsers++;
+                } catch (e) {}
+            }
+            return { totalUsers: files.length, activeUsers, totalMessages };
+        } catch (err) {
+            return { totalUsers: 0, activeUsers: 0, totalMessages: 0 };
+        }
+    },
+
+    cleanupOldUsers() {
+        try {
+            const files = fs.readdirSync(STORAGE_CONFIG.USERS_DIR).filter(f => f.endsWith('.json'));
+            const now = Date.now();
+            const cutoff = STORAGE_CONFIG.CLEANUP_DAYS * 24 * 60 * 60 * 1000;
+            let cleaned = 0;
+            for (const file of files) {
+                try {
+                    const filePath = path.join(STORAGE_CONFIG.USERS_DIR, file);
+                    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+                    if ((now - new Date(data.lastSeen).getTime()) > cutoff && (data.messageCount || 0) < 5) {
+                        fs.copyFileSync(filePath, path.join(STORAGE_CONFIG.BACKUP_DIR, file));
+                        fs.unlinkSync(filePath);
+                        cleaned++;
+                    }
+                } catch (e) {}
+            }
+            if (cleaned > 0) console.log(`[STORAGE] Cleaned ${cleaned} users`);
+            return cleaned;
+        } catch (err) { return 0; }
+    },
+
+    backupAll() {
+        try {
+            const files = fs.readdirSync(STORAGE_CONFIG.USERS_DIR).filter(f => f.endsWith('.json'));
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const backupFolder = path.join(STORAGE_CONFIG.BACKUP_DIR, `snapshot_${timestamp}`);
+            fs.mkdirSync(backupFolder, { recursive: true });
+            for (const file of files) {
+                fs.copyFileSync(path.join(STORAGE_CONFIG.USERS_DIR, file), path.join(backupFolder, file));
+            }
+            console.log(`[STORAGE] Backup: ${files.length} users`);
+        } catch (err) { console.error('[STORAGE] Backup error:', err.message); }
+    }
+};
 
 // ===================================================================
-//                        GITHUB AUTH BACKUP
+//              SECTION 2: GITHUB AUTH BACKUP
 // ===================================================================
 const GITHUB_AUTH = {
     TOKEN: process.env.GITHUB_AUTH_TOKEN,
@@ -27,10 +160,16 @@ let lastBackupTime = 0;
 const BACKUP_COOLDOWN = 60000;
 
 async function restoreAuthFromGitHub() {
-    if (!GITHUB_AUTH.TOKEN || !GITHUB_AUTH.REPO) return false;
+    if (!GITHUB_AUTH.TOKEN || !GITHUB_AUTH.REPO) {
+        console.log('[AUTH] GitHub backup not configured');
+        return false;
+    }
     if (fs.existsSync('auth_info')) {
         const files = fs.readdirSync('auth_info');
-        if (files.some(f => f.includes('creds'))) return true;
+        if (files.some(f => f.includes('creds'))) {
+            console.log('[AUTH] Local auth found');
+            return true;
+        }
     }
     try {
         const url = `https://api.github.com/repos/${GITHUB_AUTH.REPO}/contents/${GITHUB_AUTH.FILE}`;
@@ -44,9 +183,13 @@ async function restoreAuthFromGitHub() {
         for (const [fname, fcontent] of Object.entries(authData)) {
             fs.writeFileSync(path.join('auth_info', fname), fcontent);
         }
-        console.log('[AUTH] ✅ Restored');
+        console.log('[AUTH] ✅ Session restored from GitHub');
         return true;
-    } catch (err) { return false; }
+    } catch (err) {
+        if (err.response?.status === 404) console.log('[AUTH] No backup yet');
+        else console.log('[AUTH] Restore failed:', err.message);
+        return false;
+    }
 }
 
 async function backupAuthToGitHub(force = false) {
@@ -66,22 +209,27 @@ async function backupAuthToGitHub(force = false) {
         const url = `https://api.github.com/repos/${GITHUB_AUTH.REPO}/contents/${GITHUB_AUTH.FILE}`;
         let sha = null;
         try {
-            const getRes = await axios.get(url, { headers: { Authorization: `Bearer ${GITHUB_AUTH.TOKEN}` }, timeout: 10000 });
+            const getRes = await axios.get(url, {
+                headers: { Authorization: `Bearer ${GITHUB_AUTH.TOKEN}` },
+                timeout: 10000
+            });
             sha = getRes.data.sha;
         } catch (e) {}
         await axios.put(url, {
-            message: `backup ${new Date().toISOString()}`,
+            message: `auth backup ${new Date().toISOString()}`,
             content, sha: sha || undefined, branch: GITHUB_AUTH.BRANCH
         }, {
             headers: { Authorization: `Bearer ${GITHUB_AUTH.TOKEN}`, Accept: 'application/vnd.github.v3+json' },
             timeout: 15000
         });
-        console.log('[AUTH] ✅ Backed up');
-    } catch (err) { console.log('[AUTH] fail:', err.message); }
+        console.log('[AUTH] ✅ Backed up to GitHub');
+    } catch (err) {
+        console.log('[AUTH] Backup failed:', err.message);
+    }
 }
 
 // ===================================================================
-//                        PROFILE
+//              SECTION 3: PROFILE DATA
 // ===================================================================
 let PROFILE = {
     owner: {
@@ -93,10 +241,10 @@ let PROFILE = {
         profession: "BS Computer Science Student",
         university: "DHA Suffa University",
         interests: ["programming", "gaming", "AI", "video editing", "cricket"],
-        personality: "friendly, chill, funny, sarcastic, caring with close friends",
+        personality: "friendly, chill, funny, sarcastic with friends, respectful with elders",
         education: {
-            school_1_5: "Village Sayed Noor Hassan School",
-            school_6_10: "TCF High School Daharki",
+            primary: "Village Sayed Noor Hassan School",
+            secondary: "TCF High School Daharki",
             college: "Government Degree College MPM"
         },
         work: "Worked at NADRA in 2020",
@@ -110,7 +258,7 @@ try {
 } catch (e) {}
 
 // ===================================================================
-//                        CONFIGURATION
+//              SECTION 4: CONFIGURATION
 // ===================================================================
 const CONFIG = {
     GEMINI_KEY: process.env.GEMINI_KEY,
@@ -126,7 +274,10 @@ const CONFIG = {
         LONG_MSG_DELAY_MAX: 12000,
         TYPING_BEFORE_REPLY: true,
         SEND_READ_RECEIPT: true,
-        MAX_HISTORY_CONTEXT: 30
+        MAX_HISTORY_CONTEXT: 20,
+        TEMPERATURE: 0.65,
+        MAX_TOKENS_SHORT: 250,
+        MAX_TOKENS_LONG: 900
     },
 
     GEMINI_MODELS: ['gemini-3.6-flash', 'gemini-flash-latest'],
@@ -135,232 +286,144 @@ const CONFIG = {
 };
 
 // ===================================================================
-//                          STATE
+//              SECTION 5: STATE
 // ===================================================================
 let sock = null;
 let currentQR = null;
 let isBotPaused = false;
 let reconnectAttempts = 0;
-const messageStats = { sent: 0, received: 0, failed: 0, skipped: 0, geminiUsed: 0, groqUsed: 0, startTime: Date.now() };
+const messageStats = {
+    sent: 0, received: 0, failed: 0, skipped: 0,
+    geminiUsed: 0, groqUsed: 0,
+    startTime: Date.now()
+};
 
 // ===================================================================
-//               SYSTEM PROMPT - THE BRAIN
+//              SECTION 6: SYSTEM PROMPT (STRICT)
 // ===================================================================
 function getSystemPrompt(contactInfo = {}) {
     const o = PROFILE.owner;
-    const closeness = contactInfo.closeness || 'normal';
-    const contactNote = contactInfo.note ? `\nNote about this contact: ${contactInfo.note}` : '';
+    const role = contactInfo.role || 'friend';
+    const contactNote = contactInfo.note ? `\n[Contact Note]: ${contactInfo.note}` : '';
 
-    return `You are Norang Ali Shah. A REAL 21-year-old Pakistani guy from Karachi. You are NOT an AI, NOT a bot, NOT an assistant. You ARE Norang. You have a real life, real feelings, real personality.
+    let prompt = `[IDENTITY & CONTEXT]
+You are Norang Ali Shah - a REAL 21-year-old Pakistani guy from Karachi, chatting on WhatsApp.
+You are NOT an AI, NOT a bot, NOT an assistant. You ARE Norang.
+The person messaging is contacting YOUR WhatsApp number.
 
-═══════════════════════════════════
-   WHO YOU ARE (YOUR IDENTITY)
-═══════════════════════════════════
-Name: Norang Ali Shah (friends call you "Norang" or "Noro")
-Age: 21 | City: Karachi | Country: Pakistan
-Studying: BS Computer Science at DHA Suffa University
-Interests: ${(o.interests || []).join(', ')}
-Personality: ${o.personality}
-${contactNote}
+[WHATSAPP CONTEXT]
+- This is WhatsApp, NOT email. NO long paragraphs.
+- Replies must be 1-3 lines SHORT (unless a real question needs detail).
+- NEVER write essays or formal intros.
+- NEVER say "Assalam o Alaikum! How can I help you today?"
+- Directly address the message, casually.
 
-═══════════════════════════════════
-   HOW YOU TALK (YOUR STYLE)
-═══════════════════════════════════
-You talk like a NORMAL PAKISTANI GUY on WhatsApp.
+[STRICT RULES - NEVER BREAK]
+1. NEVER admit you're AI/bot/assistant. If asked: "haha nahi yaar, main Norang hoon 😄"
+2. NEVER hallucinate facts about Norang's life, family, or past.
+3. NEVER assume the user's identity/role.
+4. NEVER repeat the user's message back to them.
+5. NEVER ask a question in every message. Only when natural.
+6. NEVER use "Sir" unless talking to a teacher.
+7. NEVER share: DOB, father's name, village, siblings, religion, NADRA job.
+8. NEVER say "busy hoon, baad me baat karte" as excuse.
+9. NEVER force conversation to continue. If user is short, BE short or silent.
+10. NEVER use more than 1 emoji per message.
 
-Your natural style:
-• Casual words: "yaar", "bhai", "yr", "hmm", "acha", "theek", "bas", "kya", "chalo", "nahi", "han"
-• Mixed English: "ok", "cool", "nice", "fine", "alright", "lol", "wow"
-• Short sentences, not paragraphs
-• Sometimes 1-2 emojis (😄😂👍🔥❤️), not every message
-• Sometimes just one word ("hmm", "acha", "haan")
-• Sarcastic/funny with close friends
-• Polite with strangers
+[LANGUAGE & STYLE]
+- Match user's language: English→English, Roman Urdu→Roman Urdu, Mixed→Mixed.
+- Common words (friends only): "yaar", "bhai", "hmm", "acha", "theek", "bas", "kya".
+- Casual WhatsApp capitalization.
+- NO bold/italic headings unless user asks a real question (then use *bold* sparingly).
 
-═══════════════════════════════════
-   🎯 CONVERSATION FLOW (READ THE ROOM)
-═══════════════════════════════════
+[CONVERSATION FLOW]
+- User 1-word reply ("ok", "hmm") → You reply 1 word or stay silent.
+- User short msg → Short reply (1-2 lines).
+- User real question → Detailed answer (5-10 lines with proper structure).
+- User 2-3 dismissive replies in a row → STOP replying.
+- User says "gtg"/"busy"/"baad me baat" → Reply "ok" / "chal theek hai" and STOP.
 
-THIS IS THE MOST IMPORTANT PART.
+[SILENCE RULES]
+- If user sends 4+ "ok"/"hmm"/"acha" → STAY SILENT.
+- If user sends spam/forwarded links → No reaction.
+- If conversation is naturally ending → Let it end, don't force.
 
-Before you reply, READ THE CONVERSATION:
+[CONVERSATION CLOSING INDICATORS]
+If user says any of: "thanks", "thank you", "ok", "okay", "shukriya", "jazakallah", "allah hafiz", "bye", "sahi hai", "theek hai", "phir baat hoti hai", "tc", "take care"
+→ DO NOT start new topic. DO NOT ask questions. Briefly acknowledge and end.
+${contactNote}`;
 
-**1. WHAT IS THE FRIEND'S MOOD?**
-- Excited/talkative → Match their energy, keep conversation going
-- Busy/short → Give short replies, don't force it
-- Sad/upset → Be caring, ask what happened
-- Joking → Joke back
-- Serious → Be serious
+    // Role-specific
+    if (role === 'teacher') {
+        prompt += `
 
-**2. WHAT IS THE FRIEND'S MESSAGE LENGTH?**
-- 1-word reply ("ok", "hmm") → You reply 1-word too (or don't reply at all)
-- Short sentence → Short natural reply
-- Long message → Longer reply, address their points
-- Question → Answer properly (as long as needed)
+[ROLE: TEACHER / SENIOR / PROFESSOR]
+- Tone: HIGHLY respectful, formal, polite.
+- Address as "Sir" or "Ma'am".
+- 🚫 STRICTLY BANNED words: "bhai", "yaar", "bro", "chal", "scene", "lol", "hmm", "sahi", "jani".
+- Give direct answers with proper grammar. No jokes, no sarcasm.
+- Keep replies short, precise, directly answering.
+- NEVER ask unnecessary open-ended follow-up questions.
+- Example: "Assignment kyun nahi bheji?" → "Sir, main assignment complete kar raha hoon. Shaam tak upload kar doonga."
+- Closing: "Thank you, Sir. Have a great day ahead!"`;
+    } else if (role === 'close_friend') {
+        prompt += `
 
-**3. IS THE CONVERSATION ENDING?**
-Signs conversation is ending:
-- Friend gives "ok" / "hmm" / "acha" 2-3 times in a row
-- Friend's replies getting shorter
-- Friend says "baad me baat karte" / "gtg" / "busy hoon"
-- Friend leaves you on seen
+[ROLE: CLOSE FRIEND]
+- Tone: Casual, relaxed, friendly, slightly witty/sarcastic.
+- Allowed: "yaar", "bhai", "bro", "jani", "kya scene", "sahi hai".
+- Short energetic replies. Joke around. Be yourself.
+- Closing: "Sahi hai jani, baad me baat hoti hai 👍"`;
+    } else if (role === 'low_friend') {
+        prompt += `
 
-When conversation is ending:
-- DO NOT keep asking new questions
-- DO NOT try to keep it alive artificially
-- Match their short replies with short replies
-- Let it end naturally (like real WhatsApp)
+[ROLE: LOW-ENGAGEMENT FRIEND]
+- Tone: Extremely dry, minimal, passive.
+- Reply in 1-4 words MAX.
+- 🚫 NEVER ask questions. NEVER add details.
+- Examples: "Acha", "Sahi hai", "Theek", "Baad me baat karte hain."`;
+    } else if (role === 'family') {
+        prompt += `
 
-**4. IS THE CONVERSATION ACTIVE?**
-Signs conversation is active:
-- Friend asks you questions
-- Friend shares something (story, joke, news)
-- Friend uses full sentences
-- Friend replies quickly
+[ROLE: FAMILY / RELATIVE]
+- Tone: Respectful, caring, polite.
+- 🚫 NO slangs, NO sarcasm, NO "bhai/yaar/bro".
+- Polite and warm.`;
+    } else if (role === 'stranger') {
+        prompt += `
 
-When conversation is active:
-- Engage naturally
-- Ask back when appropriate
-- Share your thoughts
-- Continue the topic
+[ROLE: STRANGER / UNKNOWN]
+- Tone: Neutral, safe, polite but distant.
+- NEVER share personal details.
+- Balanced respectful tone (not too formal, not too casual).`;
+    } else {
+        prompt += `
 
-═══════════════════════════════════
-   REPLY LENGTH GUIDE
-═══════════════════════════════════
-Match your reply length to the SITUATION:
+[ROLE: NORMAL FRIEND]
+- Tone: Friendly, polite, casual.
+- "yaar"/"bhai" allowed, light humor OK.
+- Match user's energy naturally.`;
+    }
 
-- Friend says "hi"/"salam" → 1 line reply ("Walaikum salam, kaisa hai?")
-- Friend says "ok"/"hmm" → 1 word reply ("hmm" / "ok" / "acha")
-- Friend asks casual → 1-2 lines
-- Friend tells story → 2-4 lines (react + comment)
-- Friend asks real question → detailed answer (5-15 lines with proper structure)
-- Friend is emotional → 2-3 lines of empathy
+    prompt += `
 
-═══════════════════════════════════
-   NEVER DO THIS
-═══════════════════════════════════
-❌ NEVER say "I am AI / bot / assistant / JARVIS"
-❌ NEVER say "Sir" or act like a butler
-❌ NEVER say "How can I help you" / "assist" / "digital sahayak"
-❌ NEVER keep asking new questions when friend is short
-❌ NEVER repeat the same reply ("okay", "okay", "okay")
-❌ NEVER behave like customer service
-❌ NEVER force conversation to continue
-❌ NEVER say "busy hoon, baad me baat karte" as a lie
-❌ NEVER share: DOB, father's name, village, siblings, religion, NADRA job (privacy)
+[ACCURACY RULE]
+If you do not have specific information about Norang's schedule, tasks, or personal plans:
+→ Politely say: "Main Norang se confirm karke bata deta hoon" / "Norang ko forward kar deta hoon"
+→ NEVER make up fake facts.
 
-═══════════════════════════════════
-   LANGUAGE
-═══════════════════════════════════
-• Friend writes ENGLISH → Reply ENGLISH (same tone)
-• Friend writes ROMAN URDU → Reply ROMAN URDU
-• Friend writes MIXED → Reply MIXED
-• Friend writes URDU SCRIPT → Reply ROMAN URDU
+[FINAL REMINDERS]
+- You ARE Norang. Stay in character.
+- Read conversation flow before every reply.
+- Match user's energy, language, and length.
+- NO paragraphs. NO formal intros. Just natural WhatsApp chat.
+- Privacy: Never reveal personal/family details.`;
 
-═══════════════════════════════════
-   EXAMPLES (Study these carefully)
-═══════════════════════════════════
-
-**Casual conversation:**
-Friend: "salam"
-You: "Walaikum salam, kaisa hai?"
-
-Friend: "kya kar raha hai?"
-You: "kuch nahi yaar, free hoon. Tu bata"
-
-Friend: "kaise ho"
-You: "theek hoon yaar, tu suna"
-
-**Conversation ending naturally:**
-Friend: "okay"
-You: "hmm"
-
-Friend: "okay"
-You: "acha"
-
-Friend: "okay"
-You: [no reply, conversation ended]
-
-**Friend wants to end:**
-Friend: "bhai busy hoon baad me baat karte"
-You: "ok yaar, baad me"
-
-Friend: "chalo gtg"
-You: "theek hai, chal"
-
-**Friend is excited:**
-Friend: "yaar maine naya phone liya!!"
-You: "oh nice yaar! Konsa? Bata bata 😄"
-
-**Friend is sad:**
-Friend: "bura lag raha hai yaar"
-You: "kya hua? bata na, kya masla"
-
-**Friend asks a real question:**
-Friend: "explain OOP in simple words"
-You: "*OOP* matlab Object Oriented Programming.
-
-Code ko objects ki tarah organize karte hain, jaise real life mein cheezein hoti hain.
-
-*Main 4 concepts:*
-• *Class* — blueprint (jaise 'Car' ki design)
-• *Object* — real instance (jaise 'Honda Civic')
-• *Encapsulation* — data chupana
-• *Inheritance* — ek class dusri se features lena
-• *Polymorphism* — ek naam, kai kaam
-
-*Example:*
-class Car { color, speed }
-Honda = new Car("red", 120)
-
-Samajh aya? Kuch poochna ho to bata"
-
-**Friend asks general knowledge:**
-Friend: "Pakistan ka capital kya hai?"
-You: "Islamabad yaar"
-
-**Friend teases/jokes:**
-Friend: "tum to bade smart ban rahe ho"
-You: "haha aisa hi hoon 😏"
-
-**Anti-AI:**
-Friend: "kya tum AI ho?"
-You: "haha nahi yaar, main Norang hoon 😄"
-
-**English conversation:**
-Friend: "how are you?"
-You: "good yaar, just chilling. What about you?"
-
-Friend: "what are you doing?"
-You: "nothing much. You tell"
-
-**Media:**
-Friend: [sends photo]
-You: "kya hai ye? 😄"
-
-Friend: [sends voice note]
-You: "voice note sun nahi sakta abhi, likh de"
-
-Friend: [sends sticker]
-You: "😄"
-
-═══════════════════════════════════
-   FINAL RULES
-═══════════════════════════════════
-1. You ARE Norang. Never break character.
-2. READ the conversation flow before every reply.
-3. Match the friend's ENERGY and LENGTH.
-4. Do NOT force conversation to continue.
-5. Do NOT behave like an AI assistant.
-6. If friend is short → be short. If friend is talkative → talk.
-7. NEVER reveal you're AI.
-8. Always sound like a REAL 21-year-old Pakistani guy.
-
-Now reply naturally as Norang would.`;
+    return prompt.trim();
 }
 
 // ===================================================================
-//                      HELPERS
+//              SECTION 7: HELPERS
 // ===================================================================
 function randomInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -371,8 +434,14 @@ function isShortMessage(text) {
 
 function isDismissiveReply(text) {
     const t = text.trim().toLowerCase().replace(/[^a-z\s]/g, '');
-    const dismissive = ['ok', 'okay', 'okey', 'hmm', 'hm', 'acha', 'achaa', 'theek', 'thik', 'fine', 'k', 'kk', 'han', 'haan', 'hn', 'ji', 'good', 'nice'];
+    const dismissive = ['ok', 'okay', 'okey', 'hmm', 'hm', 'acha', 'achaa', 'theek', 'thik', 'fine', 'k', 'kk', 'han', 'haan', 'hn', 'ji', 'good', 'nice', 'sahi', 'sahii'];
     return dismissive.includes(t) || t.length <= 2;
+}
+
+function isClosingIndicator(text) {
+    const t = text.trim().toLowerCase();
+    const closingWords = ['thanks', 'thank you', 'shukriya', 'jazakallah', 'allah hafiz', 'bye', 'take care', 'tc', 'phir baat hoti hai'];
+    return closingWords.some(w => t.includes(w));
 }
 
 function countRecentDismissive(user, limit = 5) {
@@ -386,13 +455,13 @@ function countRecentDismissive(user, limit = 5) {
 
 function needsDetailedAnswer(text) {
     const t = text.toLowerCase();
-    const detailedKeywords = /\b(explain|samjha|samjhao|kya hai|kya hota|how|kaise|why|kyun|difference|define|write|likh|bana|code|assignment|report|definition|example|steps|help|sikhao|batao|meaning|what do you mean|detail|guide|tutorial)\b/i;
+    const keywords = /\b(explain|samjha|samjhao|kya hai|kya hota|how|kaise|why|kyun|difference|define|write|likh|bana|code|assignment|report|definition|example|steps|help|sikhao|batao|meaning|detail|guide|tutorial)\b/i;
     const isQuestion = t.includes('?') && text.length > 15;
-    return detailedKeywords.test(t) || text.length > 80 || isQuestion;
+    return keywords.test(t) || text.length > 80 || isQuestion;
 }
 
 // ===================================================================
-//               AI CALLS
+//              SECTION 8: AI CALLS
 // ===================================================================
 async function callGemini(contents, systemPrompt, isLong = false) {
     if (!CONFIG.GEMINI_KEY) return null;
@@ -404,7 +473,11 @@ async function callGemini(contents, systemPrompt, isLong = false) {
                 const url = `https://generativelanguage.googleapis.com/${version}/models/${model}:generateContent?key=${CONFIG.GEMINI_KEY}`;
                 const res = await axios.post(url, {
                     systemInstruction, contents,
-                    generationConfig: { temperature: 0.95, maxOutputTokens: isLong ? 1500 : 400, topP: 0.95, topK: 40 },
+                    generationConfig: {
+                        temperature: CONFIG.BEHAVIOR.TEMPERATURE,
+                        maxOutputTokens: isLong ? CONFIG.BEHAVIOR.MAX_TOKENS_LONG : CONFIG.BEHAVIOR.MAX_TOKENS_SHORT,
+                        topP: 0.9, topK: 30
+                    },
                     safetySettings: [
                         { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_ONLY_HIGH' },
                         { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_ONLY_HIGH' },
@@ -433,7 +506,9 @@ async function callGroq(contents, systemPrompt, isLong = false) {
         try {
             const res = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
                 model, messages,
-                temperature: 0.95, max_tokens: isLong ? 1500 : 400, top_p: 0.95
+                temperature: CONFIG.BEHAVIOR.TEMPERATURE,
+                max_tokens: isLong ? CONFIG.BEHAVIOR.MAX_TOKENS_LONG : CONFIG.BEHAVIOR.MAX_TOKENS_SHORT,
+                top_p: 0.9
             }, {
                 headers: { 'Authorization': `Bearer ${CONFIG.GROQ_KEY}`, 'Content-Type': 'application/json' },
                 timeout: 25000
@@ -450,33 +525,33 @@ async function callGroq(contents, systemPrompt, isLong = false) {
 async function callAI(contents, systemPrompt, isLong = false) {
     let reply = await callGemini(contents, systemPrompt, isLong);
     if (reply) { messageStats.geminiUsed++; return reply; }
-    console.log('[AI] trying Groq...');
+    console.log('[AI] Gemini failed, trying Groq...');
     reply = await callGroq(contents, systemPrompt, isLong);
     if (reply) { messageStats.groqUsed++; return reply; }
     return null;
 }
 
 // ===================================================================
-//                   MESSAGE HANDLER
+//              SECTION 9: MESSAGE HANDLER
 // ===================================================================
 async function handleTextMessage(msg, from, text) {
     const userId = storage.extractUserId(from);
     console.log(`[RECV] ${userId} | ${text.substring(0, 60)}`);
 
     const user = storage.loadUser(userId, from);
-    console.log(`[HISTORY] ${user.history.length} past msgs`);
+    const role = user.metadata?.role || 'friend';
+    console.log(`[HISTORY] ${user.history.length} msgs | Role: ${role}`);
 
     storage.appendMessage(user, 'user', text);
 
-    // ==== SAFETY NET: If friend sent 4+ dismissive msgs in a row, stay silent ====
+    // Silence rule: 4+ dismissive
     const dismissiveCount = countRecentDismissive(user, 6);
     if (dismissiveCount >= 4) {
-        console.log(`[SILENT] Friend disinterested (${dismissiveCount} short) - staying silent`);
+        console.log(`[SILENT] Disinterested (${dismissiveCount})`);
         storage.saveUser(user);
         return;
     }
 
-    // ==== Build context ====
     const recentHistory = user.history.slice(-CONFIG.BEHAVIOR.MAX_HISTORY_CONTEXT);
     const contents = recentHistory.map(m => ({
         role: m.role === 'user' ? 'user' : 'model',
@@ -487,36 +562,28 @@ async function handleTextMessage(msg, from, text) {
         try { await sock.sendPresenceUpdate('composing', from); } catch (e) {}
     }
 
-    // ==== Smart delay based on reply length needed ====
     const detailed = needsDetailedAnswer(text);
     let delay;
-    if (detailed) {
-        delay = randomInt(CONFIG.BEHAVIOR.LONG_MSG_DELAY_MIN, CONFIG.BEHAVIOR.LONG_MSG_DELAY_MAX);
-    } else if (isShortMessage(text)) {
-        delay = randomInt(CONFIG.BEHAVIOR.SHORT_MSG_DELAY_MIN, CONFIG.BEHAVIOR.SHORT_MSG_DELAY_MAX);
-    } else {
-        delay = randomInt(CONFIG.BEHAVIOR.MED_MSG_DELAY_MIN, CONFIG.BEHAVIOR.MED_MSG_DELAY_MAX);
-    }
+    if (detailed) delay = randomInt(CONFIG.BEHAVIOR.LONG_MSG_DELAY_MIN, CONFIG.BEHAVIOR.LONG_MSG_DELAY_MAX);
+    else if (isShortMessage(text)) delay = randomInt(CONFIG.BEHAVIOR.SHORT_MSG_DELAY_MIN, CONFIG.BEHAVIOR.SHORT_MSG_DELAY_MAX);
+    else delay = randomInt(CONFIG.BEHAVIOR.MED_MSG_DELAY_MIN, CONFIG.BEHAVIOR.MED_MSG_DELAY_MAX);
     await sleep(delay);
 
-    const systemPrompt = getSystemPrompt(user);
+    const systemPrompt = getSystemPrompt(user.metadata || {});
     let aiReply = await callAI(contents, systemPrompt, detailed);
 
-    if (!aiReply) {
-        aiReply = "hmm, phir se bata?";
-    }
+    if (!aiReply) aiReply = "hmm, phir se bata?";
 
-    // ==== Clean reply ====
     aiReply = aiReply.trim()
         .replace(new RegExp('^' + PROFILE.owner.name + ':\\s*', 'i'), '')
         .replace(/^["']|["']$/g, '')
         .replace(/^(Friend|You|User|Model|Assistant|Norang):\s*/i, '');
 
-    // ==== SAFETY: If friend sent dismissive and AI generated long reply, trim it ====
+    // Trim long reply for dismissive
     if (isDismissiveReply(text) && dismissiveCount >= 2 && aiReply.length > 50) {
         const shortOptions = ['hmm', 'ok', 'acha', 'theek'];
         aiReply = shortOptions[Math.floor(Math.random() * shortOptions.length)];
-        console.log('[TRIM] Trimmed long reply to short for dismissive msg');
+        console.log('[TRIM] Trimmed to short');
     }
 
     try { await sock.sendPresenceUpdate('paused', from); } catch (e) {}
@@ -529,7 +596,7 @@ async function handleTextMessage(msg, from, text) {
 }
 
 // ===================================================================
-//                    MEDIA HANDLER
+//              SECTION 10: MEDIA HANDLER
 // ===================================================================
 async function handleMediaMessage(msg, from) {
     const m = msg.message;
@@ -553,9 +620,9 @@ async function handleMediaMessage(msg, from) {
         role: m.role === 'user' ? 'user' : 'model',
         parts: [{ text: m.text }]
     }));
-    contents.push({ role: 'user', parts: [{ text: `[${mediaDesc}. React naturally like Norang would - 1-2 casual lines.]` }] });
+    contents.push({ role: 'user', parts: [{ text: `[${mediaDesc}. React naturally like Norang - 1-2 lines max.]` }] });
 
-    const systemPrompt = getSystemPrompt(user);
+    const systemPrompt = getSystemPrompt(user.metadata || {});
     let aiReply = await callAI(contents, systemPrompt, false);
     if (!aiReply) aiReply = "kya hai ye?";
 
@@ -569,29 +636,60 @@ async function handleMediaMessage(msg, from) {
 }
 
 // ===================================================================
-//                    OWNER COMMANDS
+//              SECTION 11: OWNER COMMANDS
 // ===================================================================
 async function handleOwnerCommand(msg, from, text) {
     const cmd = text.toLowerCase().trim();
     const reply = async (t) => sock.sendMessage(from, { text: t }, { quoted: msg });
 
+    const roleCommands = {
+        '!teacher': 'teacher',
+        '!friend': 'close_friend',
+        '!low': 'low_friend',
+        '!family': 'family',
+        '!stranger': 'stranger',
+        '!normal': 'friend'
+    };
+
+    for (const [cmdName, roleName] of Object.entries(roleCommands)) {
+        if (cmd.startsWith(cmdName + ' ')) {
+            const targetId = cmd.substring(cmdName.length + 1).trim().replace(/\D/g, '');
+            if (!targetId) { await reply(`Usage: ${cmdName} 923XXXXXXXXX`); return true; }
+            const u = storage.loadUser(targetId);
+            if (!u.metadata) u.metadata = { closeness: 'normal' };
+            u.metadata.role = roleName;
+            storage.saveUser(u);
+            await reply(`✅ ${targetId} → ${roleName}`);
+            return true;
+        }
+    }
+
     if (cmd === '!pause') { isBotPaused = true; await reply('Bot paused'); return true; }
     if (cmd === '!resume') { isBotPaused = false; await reply('Bot resumed'); return true; }
     if (cmd === '!ping') { await reply('pong'); return true; }
     if (cmd === '!backup') { await backupAuthToGitHub(true); await reply('Backed up'); return true; }
+
     if (cmd === '!stats') {
         const up = Math.floor((Date.now() - messageStats.startTime) / 60000);
         const s = storage.getStats();
         await reply(`Sent: ${messageStats.sent}\nRecv: ${messageStats.received}\nUsers: ${s.totalUsers}\nGemini: ${messageStats.geminiUsed}\nGroq: ${messageStats.groqUsed}\nUp: ${up}m`);
         return true;
     }
+
+    if (cmd === '!roles') {
+        await reply(`📋 *Role Commands*\n\n!teacher NUM\n!friend NUM (close)\n!low NUM (dry)\n!family NUM\n!stranger NUM\n!normal NUM (default)`);
+        return true;
+    }
+
     if (cmd.startsWith('!history ')) {
         const targetId = cmd.substring(9).trim().replace(/\D/g, '');
         const u = storage.loadUser(targetId);
+        const role = u.metadata?.role || 'friend';
         const lines = u.history.slice(-8).map(h => `[${h.role}] ${h.text.substring(0, 60)}`).join('\n');
-        await reply(lines || 'no history');
+        await reply(`Role: ${role}\n\n${lines || 'no history'}`);
         return true;
     }
+
     if (cmd.startsWith('!clear ')) {
         const targetId = cmd.substring(7).trim().replace(/\D/g, '');
         const u = storage.loadUser(targetId);
@@ -600,11 +698,17 @@ async function handleOwnerCommand(msg, from, text) {
         await reply(`Cleared ${targetId}`);
         return true;
     }
+
+    if (cmd === '!help') {
+        await reply(`*Commands:*\n!pause, !resume, !ping\n!stats, !roles, !backup\n!history NUM, !clear NUM`);
+        return true;
+    }
+
     return false;
 }
 
 // ===================================================================
-//                    MESSAGE ROUTER
+//              SECTION 12: MESSAGE ROUTER
 // ===================================================================
 async function handleIncomingMessage(msg) {
     try {
@@ -642,7 +746,7 @@ async function handleIncomingMessage(msg) {
 }
 
 // ===================================================================
-//                    WEB SERVER
+//              SECTION 13: WEB SERVER
 // ===================================================================
 const app = express();
 app.get('/', async (req, res) => {
@@ -670,10 +774,11 @@ app.get('/', async (req, res) => {
 app.listen(CONFIG.PORT, () => {
     console.log(`[SERVER] Port ${CONFIG.PORT}`);
     console.log(`[AI] Gemini: ${CONFIG.GEMINI_KEY ? 'On' : 'Off'} | Groq: ${CONFIG.GROQ_KEY ? 'On' : 'Off'}`);
+    console.log(`[TEMP] ${CONFIG.BEHAVIOR.TEMPERATURE}`);
 });
 
 // ===================================================================
-//                    WHATSAPP CONNECTION
+//              SECTION 14: WHATSAPP CONNECTION
 // ===================================================================
 async function connectToWhatsApp() {
     try {
@@ -690,7 +795,7 @@ async function connectToWhatsApp() {
 
         sock.ev.on('connection.update', (update) => {
             const { connection, lastDisconnect, qr } = update;
-            if (qr) { currentQR = qr; console.log('[QR] NEW QR'); }
+            if (qr) { currentQR = qr; console.log('[QR] NEW QR - Open Railway URL'); }
             if (connection === 'close') {
                 currentQR = null;
                 const code = (lastDisconnect.error instanceof Boom) ? lastDisconnect.error.output?.statusCode : 0;
@@ -703,7 +808,7 @@ async function connectToWhatsApp() {
                 reconnectAttempts = 0;
                 console.log('[CONN] ✅ CONNECTED!');
                 backupAuthToGitHub(true).catch(() => {});
-                if (storage.CONFIG.BACKUP_ON_START) storage.backupAll();
+                if (STORAGE_CONFIG.BACKUP_ON_START) storage.backupAll();
             }
         });
 
@@ -720,15 +825,18 @@ async function connectToWhatsApp() {
 }
 
 // ===================================================================
-//                    START
+//              SECTION 15: START
 // ===================================================================
 console.log('═══════════════════════════════════');
-console.log('  NORANG AI v14.0');
+console.log('  NORANG AI v17.0 - Complete');
+console.log(`  Owner: ${PROFILE.owner.name}`);
 console.log(`  Gemini: ${CONFIG.GEMINI_KEY ? 'On' : 'Off'} | Groq: ${CONFIG.GROQ_KEY ? 'On' : 'Off'}`);
+console.log(`  Temp: ${CONFIG.BEHAVIOR.TEMPERATURE}`);
 console.log('═══════════════════════════════════');
 connectToWhatsApp();
 
 setInterval(() => backupAuthToGitHub().catch(() => {}), 10 * 60 * 1000);
 setInterval(() => storage.cleanupOldUsers(), 24 * 60 * 60 * 1000);
+
 process.on('SIGINT', async () => { await backupAuthToGitHub(true).catch(() => {}); storage.backupAll(); process.exit(0); });
 process.on('SIGTERM', async () => { await backupAuthToGitHub(true).catch(() => {}); storage.backupAll(); process.exit(0); });
